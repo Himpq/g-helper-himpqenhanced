@@ -17,13 +17,20 @@ namespace HimpqEnhanced
     public class HimpqConfigData
     {
         public int default_performance_mode { get; set; } = -1;
+        public int unplug_performance_mode { get; set; } = -1;
         public int debug_mode { get; set; } = 0;
         public int taskbar_window_enabled { get; set; } = 0;
+        public int taskbar_window_floating_enabled { get; set; } = 0;
         public string taskbar_window_position { get; set; } = "left";
         public string taskbar_window_template { get; set; } = "";
         public int font_size { get; set; } = 8;
         public string font_name { get; set; } = "Segoe UI";
         public int taskbar_window_offset { get; set; } = 0;
+        public int taskbar_floating_x { get; set; } = 0;
+        public int taskbar_floating_y { get; set; } = 0;
+        public int taskbar_floating_position_initialized { get; set; } = 0;
+        public int taskbar_floating_click_through { get; set; } = 1;
+        public int taskbar_floating_topmost { get; set; } = 1;
         public int internal_gap { get; set; } = 2;
         public int inter_item_gap { get; set; } = 4;
         public int row_gap { get; set; } = 1;

@@ -15,9 +15,13 @@ namespace HimpqEnhanced
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TRANSPARENT = 0x00000020;
         private const int GWL_EXSTYLE = -20;
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOMOVE = 0x0002;
         private const uint SWP_NOZORDER = 0x0004;
         private const uint SWP_NOACTIVATE = 0x0010;
         private const int SW_SHOWNOACTIVATE = 4;
+        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
@@ -107,11 +111,16 @@ namespace HimpqEnhanced
         private bool _darkTheme;
         private bool _textShadowEnabled;
 
+        public bool IsFloatingMode { get; }
+
         public HimpqTaskbarWindow()
         {
+            var config = HimpqConfig.Load();
+            IsFloatingMode = config.taskbar_window_floating_enabled == 1;
+
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
-            TopMost = true;
+            TopMost = !IsFloatingMode || config.taskbar_floating_topmost == 1;
             BackColor = Color.Black;
             TransparencyKey = Color.Black;
             MinimizeBox = false;
@@ -131,7 +140,6 @@ namespace HimpqEnhanced
             _dpi = (int)g.DpiX;
             _padding = DpiScale(2);
 
-            var config = HimpqConfig.Load();
             _configFontSize = config.font_size > 0 ? config.font_size : 8;
             _interItemGap = DpiScale(config.inter_item_gap);
             _rowGap = DpiScale(config.row_gap);
@@ -151,6 +159,9 @@ namespace HimpqEnhanced
             {
                 var cp = base.CreateParams;
                 cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+                var config = HimpqConfig.Load();
+                if (!IsFloatingMode || config.taskbar_floating_click_through == 1)
+                    cp.ExStyle |= WS_EX_TRANSPARENT;
                 return cp;
             }
         }
@@ -169,7 +180,10 @@ namespace HimpqEnhanced
             base.OnHandleCreated(e);
             BeginInvoke(() =>
             {
-                EmbedIntoTaskbar();
+                var config = HimpqConfig.Load();
+                if (!IsFloatingMode)
+                    EmbedIntoTaskbar();
+                ApplyWindowOptions(config);
                 _updateTimer = new System.Windows.Forms.Timer { Interval = GetRefreshInterval(HimpqConfig.Load()) };
                 _updateTimer.Tick += OnUpdateTick;
                 _updateTimer.Start();
@@ -180,7 +194,7 @@ namespace HimpqEnhanced
 
         private void EmbedIntoTaskbar()
         {
-            if (_embedded || !IsHandleCreated) return;
+            if (IsFloatingMode || _embedded || !IsHandleCreated) return;
 
             _hTaskbar = FindWindow("Shell_TrayWnd", null);
             if (_hTaskbar == IntPtr.Zero) return;
@@ -208,11 +222,14 @@ namespace HimpqEnhanced
         {
             BeginInvoke(() =>
             {
-                if (!_embedded)
+                if (!IsHandleCreated)
+                    CreateHandle();
+
+                if (!IsFloatingMode && !_embedded)
                 {
-                    if (!IsHandleCreated) { CreateHandle(); return; }
                     EmbedIntoTaskbar();
                 }
+                ApplyWindowOptions(HimpqConfig.Load());
                 ShowWindow(Handle, SW_SHOWNOACTIVATE);
                 if (_updateTimer is not null && !_updateTimer.Enabled)
                     _updateTimer.Start();
@@ -276,10 +293,11 @@ namespace HimpqEnhanced
                     _updateTimer.Interval = GetRefreshInterval(config);
                 UpdateFont(_configFontSize);
                 UpdateBrushes(config);
+                ApplyWindowOptions(config);
 
                 BuildLayout(config);
                 _layoutDirty = false;
-                ApplyPosition();
+                ApplyPosition(config);
             }
 
             if (_readBatteryPower)
@@ -404,8 +422,16 @@ namespace HimpqEnhanced
             _readBatteryPower = false;
         }
 
-        private void ApplyPosition()
+        private void ApplyPosition(HimpqConfigData config)
         {
+            if (IsFloatingMode)
+            {
+                int floatingTargetW = Math.Max(_totalWidth + _padding * 2, DpiScale(16));
+                int floatingTargetH = Math.Max(_totalHeight + _padding * 2, DpiScale(16));
+                ApplyFloatingPosition(config, floatingTargetW, floatingTargetH);
+                return;
+            }
+
             if (!_embedded || _hTaskbar == IntPtr.Zero) return;
 
             GetWindowRect(_hTaskbar, out RECT tr);
@@ -414,7 +440,6 @@ namespace HimpqEnhanced
             int targetW = _totalWidth + _padding * 2;
             int targetH = Math.Min(Math.Max(_totalHeight + _padding * 2, DpiScale(16)), maxH);
 
-            var config = HimpqConfig.Load();
             bool left = config.taskbar_window_position != "right";
             int offset = config.taskbar_window_offset;
 
@@ -437,6 +462,86 @@ namespace HimpqEnhanced
             int y = Math.Max(0, (taskbarH - targetH) / 2);
 
             SetWindowPos(Handle, IntPtr.Zero, x, y, targetW, targetH, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        private void ApplyFloatingPosition(HimpqConfigData config, int targetW, int targetH)
+        {
+            int x = config.taskbar_floating_x;
+            int y = config.taskbar_floating_y;
+
+            if (config.taskbar_floating_position_initialized != 1)
+            {
+                Point defaultPoint = CalculateDefaultFloatingPosition(config, targetW, targetH);
+                x = defaultPoint.X;
+                y = defaultPoint.Y;
+                config.taskbar_floating_x = x;
+                config.taskbar_floating_y = y;
+                config.taskbar_floating_position_initialized = 1;
+                HimpqConfig.Save(config);
+            }
+
+            IntPtr zOrder = config.taskbar_floating_topmost == 1 ? HWND_TOPMOST : HWND_NOTOPMOST;
+            SetWindowPos(Handle, zOrder, x, y, targetW, targetH, SWP_NOACTIVATE);
+        }
+
+        private Point CalculateDefaultFloatingPosition(HimpqConfigData config, int targetW, int targetH)
+        {
+            IntPtr taskbar = _hTaskbar != IntPtr.Zero ? _hTaskbar : FindWindow("Shell_TrayWnd", null);
+            if (taskbar == IntPtr.Zero || !GetWindowRect(taskbar, out RECT tr))
+            {
+                Logger.WriteLine("Himpq floating window: taskbar handle not found for initial position");
+                return new Point(config.taskbar_floating_x, config.taskbar_floating_y);
+            }
+
+            bool left = config.taskbar_window_position != "right";
+            int offset = config.taskbar_window_offset;
+            int x;
+
+            if (_isWin11 && !left)
+            {
+                IntPtr notify = _hNotify != IntPtr.Zero ? _hNotify : FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
+                if (notify != IntPtr.Zero && GetWindowRect(notify, out RECT nr))
+                    x = Math.Max(tr.Left + DpiScale(2), nr.Left - targetW - DpiScale(2));
+                else
+                    x = tr.Right - targetW - DpiScale(2);
+            }
+            else if (!left)
+            {
+                x = tr.Right - targetW - DpiScale(2);
+            }
+            else
+            {
+                x = tr.Left + _padding;
+            }
+
+            x += offset;
+
+            int taskbarH = tr.Bottom - tr.Top;
+            int y = tr.Top + Math.Max(0, (taskbarH - targetH) / 2);
+            return new Point(x, y);
+        }
+
+        private void ApplyWindowOptions(HimpqConfigData config)
+        {
+            if (!IsHandleCreated) return;
+
+            bool topMost = !IsFloatingMode || config.taskbar_floating_topmost == 1;
+            TopMost = topMost;
+
+            bool clickThrough = !IsFloatingMode || config.taskbar_floating_click_through == 1;
+            int exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
+            int targetStyle = clickThrough
+                ? exStyle | WS_EX_TRANSPARENT
+                : exStyle & ~WS_EX_TRANSPARENT;
+
+            if (targetStyle != exStyle)
+                SetWindowLong(Handle, GWL_EXSTYLE, targetStyle);
+
+            if (IsFloatingMode)
+            {
+                IntPtr zOrder = topMost ? HWND_TOPMOST : HWND_NOTOPMOST;
+                SetWindowPos(Handle, zOrder, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
         }
 
         private static string GetMaxWidthText(string text)

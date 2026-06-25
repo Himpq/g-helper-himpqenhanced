@@ -86,6 +86,19 @@ namespace GHelper.Mode
         public void AutoPerformance(bool powerChanged = false)
         {
             int mode = AppConfig.Get("performance_" + Program.PerformanceKey());
+
+            if (powerChanged && Program.currentSource == Program.PowerSource.Battery)
+            {
+                int unplugMode = HimpqEnhanced.Main.GetUnplugPerformanceMode();
+                if (unplugMode < 0)
+                {
+                    Logger.WriteLine($"{Program.currentSource} Performance Mode: no switch");
+                    return;
+                }
+
+                mode = unplugMode;
+            }
+
             Logger.WriteLine($"{Program.currentSource} Performance Mode: {Modes.GetName(mode == -1 ? Modes.GetCurrent() : mode)}");
 
             if (mode != -1)

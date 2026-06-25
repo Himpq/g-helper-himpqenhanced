@@ -14,23 +14,18 @@ namespace HimpqEnhanced
 
             if (config.debug_mode == 1)
             {
-                string modeName = config.default_performance_mode switch
-                {
-                    0 => "平衡",
-                    1 => "增强 (Turbo)",
-                    2 => "静音",
-                    _ => "未启用"
-                };
+                string modeName = GetPerformanceModeName(config.default_performance_mode, "未启用");
+                string unplugModeName = GetPerformanceModeName(config.unplug_performance_mode, "不切换");
                 MessageBox.Show(
-                    $"HimpqEnhanced 已启动\n默认性能模式：{modeName}",
+                    $"HimpqEnhanced 已启动\n默认性能模式：{modeName}\n断电性能模式：{unplugModeName}",
                     "HimpqEnhanced",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
             }
 
-            if (config.default_performance_mode < 0) return;
+            int targetMode = GetConfiguredPerformanceMode(config.default_performance_mode, "default performance");
+            if (targetMode < 0) return;
 
-            int targetMode = config.default_performance_mode;
             if (_initTimer is null)
             {
                 _initTimer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -47,16 +42,44 @@ namespace HimpqEnhanced
                             Program.modeControl.SetPerformanceMode(mode: targetMode, notify: false);
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Logger.WriteLine("Himpq default performance mode error: " + ex.Message);
+                    }
                 };
                 _initTimer.Start();
             }
         }
 
+        public static int GetUnplugPerformanceMode()
+        {
+            return GetConfiguredPerformanceMode(HimpqConfig.Load().unplug_performance_mode, "unplug performance");
+        }
+
+        private static int GetConfiguredPerformanceMode(int mode, string settingName)
+        {
+            if (mode < 0) return -1;
+
+            if (Modes.GetDictonary().ContainsKey(mode)) return mode;
+
+            Logger.WriteLine($"Himpq {settingName} mode is unavailable: {mode}");
+            return -1;
+        }
+
+        private static string GetPerformanceModeName(int mode, string emptyText)
+        {
+            if (mode < 0) return emptyText;
+            return Modes.GetDictonary().TryGetValue(mode, out string? modeName) ? modeName : $"未知 ({mode})";
+        }
+
         public static void StartTaskbarWindow()
         {
-            if (_taskbarWindow is null || _taskbarWindow.IsDisposed)
+            var config = HimpqConfig.Load();
+            bool floatingMode = config.taskbar_window_floating_enabled == 1;
+
+            if (_taskbarWindow is null || _taskbarWindow.IsDisposed || _taskbarWindow.IsFloatingMode != floatingMode)
             {
+                StopTaskbarWindow();
                 _taskbarWindow = new HimpqTaskbarWindow();
             }
             _taskbarWindow.ShowWindow();
@@ -87,6 +110,14 @@ namespace HimpqEnhanced
         public static void RefreshTaskbarTheme()
         {
             _taskbarWindow?.RefreshTheme();
+        }
+
+        public static void RestartTaskbarWindow()
+        {
+            bool shouldShow = HimpqConfig.Load().taskbar_window_enabled == 1;
+            StopTaskbarWindow();
+            if (shouldShow)
+                StartTaskbarWindow();
         }
 
         public static void UpdateTaskbarFont(string fontName, float fontSize)

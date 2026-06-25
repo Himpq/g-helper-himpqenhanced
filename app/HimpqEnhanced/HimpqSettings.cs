@@ -12,16 +12,22 @@ namespace HimpqEnhanced
         private const string ColorSwatchTag = "ColorSwatch";
         private CheckBox checkDebug;
         private CheckBox checkTaskbarEnabled;
+        private CheckBox checkTaskbarFloating = null!;
         private RComboBox comboDefaultMode;
+        private RComboBox comboUnplugMode;
         private RComboBox comboTaskbarPosition;
         private bool _loading;
 
         private RNumericUpDown numFontSize;
         private RNumericUpDown numOffset;
+        private RNumericUpDown numFloatingX = null!;
+        private RNumericUpDown numFloatingY = null!;
         private RNumericUpDown numInterItemGap;
         private RNumericUpDown numRowGap;
         private RNumericUpDown numRefreshInterval;
         private CheckBox checkTaskbarTextShadow;
+        private CheckBox checkFloatingClickThrough = null!;
+        private CheckBox checkFloatingTopmost = null!;
         private Panel panelTaskbarLabelColor = null!;
         private Panel panelTaskbarValueColor = null!;
         private Panel panelTaskbarShadowColor = null!;
@@ -121,6 +127,16 @@ namespace HimpqEnhanced
             return plans;
         }
 
+        private static void PopulateModeCombo(RComboBox combo, string emptyText)
+        {
+            combo.Items.Add(new ModeItem(emptyText, -1));
+            foreach (var mode in Modes.GetDictonary())
+                combo.Items.Add(new ModeItem(mode.Value, mode.Key));
+
+            combo.DisplayMember = "Text";
+            combo.ValueMember = "Value";
+        }
+
         private void InitControls()
         {
             int y = 20;
@@ -175,15 +191,31 @@ namespace HimpqEnhanced
                 Location = new Point(leftControl, y + 2),
                 Size = new Size(controlW, 26)
             };
-            comboDefaultMode.Items.Add(new ModeItem("不启用", -1));
-            comboDefaultMode.Items.Add(new ModeItem("静音", 2));
-            comboDefaultMode.Items.Add(new ModeItem("平衡", 0));
-            comboDefaultMode.Items.Add(new ModeItem("增强 (Turbo)", 1));
-            comboDefaultMode.DisplayMember = "Text";
-            comboDefaultMode.ValueMember = "Value";
+            PopulateModeCombo(comboDefaultMode, "不启用");
             comboDefaultMode.SelectedIndexChanged += (_, _) => SaveHimpqConfig();
             Controls.Add(labelDefaultMode);
             Controls.Add(comboDefaultMode);
+            y += 50;
+
+            // 断电性能模式
+            var labelUnplugMode = new Label
+            {
+                Text = "断电性能模式",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            comboUnplugMode = new RComboBox
+            {
+                NativeHeight = true,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(controlW, 26)
+            };
+            PopulateModeCombo(comboUnplugMode, "不切换");
+            comboUnplugMode.SelectedIndexChanged += (_, _) => SaveHimpqConfig();
+            Controls.Add(labelUnplugMode);
+            Controls.Add(comboUnplugMode);
             y += 60;
 
             // ── 各模式电源计划 ──
@@ -329,6 +361,32 @@ namespace HimpqEnhanced
             Controls.Add(checkTaskbarEnabled);
             y += 50;
 
+            // 显示形式
+            var labelFloating = new Label
+            {
+                Text = "显示形式",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            checkTaskbarFloating = new CheckBox
+            {
+                Text = "使用独立浮窗显示",
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(controlW, 26)
+            };
+            checkTaskbarFloating.CheckedChanged += (_, _) =>
+            {
+                if (_loading) return;
+                SaveHimpqConfig();
+                UpdateTaskbarModeControls();
+                Main.RestartTaskbarWindow();
+                BeginInvoke((Action)RefreshFloatingPositionControls);
+            };
+            Controls.Add(labelFloating);
+            Controls.Add(checkTaskbarFloating);
+            y += 50;
+
             // 位置
             var labelPos = new Label
             {
@@ -348,11 +406,110 @@ namespace HimpqEnhanced
             comboTaskbarPosition.Items.Add("右侧");
             comboTaskbarPosition.SelectedIndexChanged += (_, _) =>
             {
+                if (_loading) return;
                 SaveHimpqConfig();
                 _ = Task.Run(RefreshTaskbarPosition);
             };
             Controls.Add(labelPos);
             Controls.Add(comboTaskbarPosition);
+            y += 48;
+
+            // 浮窗 X
+            var labelFloatingX = new Label
+            {
+                Text = "浮窗 X",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            numFloatingX = new RNumericUpDown
+            {
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(100, 26),
+                Minimum = -20000,
+                Maximum = 20000
+            };
+            numFloatingX.ValueChanged += (_, _) =>
+            {
+                if (_loading) return;
+                SaveHimpqConfig(saveFloatingPosition: true);
+                Main.RefreshTaskbarPosition();
+            };
+            Controls.Add(labelFloatingX);
+            Controls.Add(numFloatingX);
+            y += 48;
+
+            // 浮窗 Y
+            var labelFloatingY = new Label
+            {
+                Text = "浮窗 Y",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            numFloatingY = new RNumericUpDown
+            {
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(100, 26),
+                Minimum = -20000,
+                Maximum = 20000
+            };
+            numFloatingY.ValueChanged += (_, _) =>
+            {
+                if (_loading) return;
+                SaveHimpqConfig(saveFloatingPosition: true);
+                Main.RefreshTaskbarPosition();
+            };
+            Controls.Add(labelFloatingY);
+            Controls.Add(numFloatingY);
+            y += 48;
+
+            // 点击穿透
+            var labelFloatingClickThrough = new Label
+            {
+                Text = "点击穿透",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            checkFloatingClickThrough = new CheckBox
+            {
+                Text = "浮窗不拦截鼠标点击",
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(controlW, 26)
+            };
+            checkFloatingClickThrough.CheckedChanged += (_, _) =>
+            {
+                if (_loading) return;
+                SaveHimpqConfig();
+                Main.RefreshTaskbarLayout();
+            };
+            Controls.Add(labelFloatingClickThrough);
+            Controls.Add(checkFloatingClickThrough);
+            y += 48;
+
+            // 浮窗置顶
+            var labelFloatingTopmost = new Label
+            {
+                Text = "浮窗置顶",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            checkFloatingTopmost = new CheckBox
+            {
+                Text = "保持浮窗在最前",
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(controlW, 26)
+            };
+            checkFloatingTopmost.CheckedChanged += (_, _) =>
+            {
+                if (_loading) return;
+                SaveHimpqConfig();
+                Main.RefreshTaskbarLayout();
+            };
+            Controls.Add(labelFloatingTopmost);
+            Controls.Add(checkFloatingTopmost);
             y += 48;
 
             // 显示项目
@@ -413,7 +570,7 @@ namespace HimpqEnhanced
             // 水平偏移
             var labelOffset = new Label
             {
-                Text = "水平偏移",
+                Text = "任务栏水平偏移",
                 Location = new Point(leftLabel, y),
                 Size = new Size(180, 30),
                 TextAlign = ContentAlignment.MiddleLeft
@@ -779,7 +936,19 @@ namespace HimpqEnhanced
             int y = titleTaskbar.Bottom + 22;
             PlaceTaskbarRow("启用任务栏窗口", checkTaskbarEnabled, y, labelX, controlX, labelW, checkboxW, controlH);
             y += rowGap;
+            PlaceTaskbarRow("显示形式", checkTaskbarFloating, y, labelX, controlX, labelW, checkboxW, controlH);
+            y += rowGap;
             PlaceTaskbarRow("任务栏位置", comboTaskbarPosition, y, labelX, controlX, labelW, controlW, controlH);
+            y += rowGap;
+            PlaceTaskbarRow("任务栏水平偏移", numOffset, y, labelX, controlX, labelW, controlW, controlH);
+            y += rowGap;
+            PlaceTaskbarRow("浮窗 X", numFloatingX, y, labelX, controlX, labelW, controlW, controlH);
+            y += rowGap;
+            PlaceTaskbarRow("浮窗 Y", numFloatingY, y, labelX, controlX, labelW, controlW, controlH);
+            y += rowGap;
+            PlaceTaskbarRow("点击穿透", checkFloatingClickThrough, y, labelX, controlX, labelW, checkboxW, controlH);
+            y += rowGap;
+            PlaceTaskbarRow("浮窗置顶", checkFloatingTopmost, y, labelX, controlX, labelW, checkboxW, controlH);
             y += rowGap;
 
             var editButton = Controls.OfType<RButton>().FirstOrDefault(button => button.Text == "编辑任务栏项目...");
@@ -788,8 +957,6 @@ namespace HimpqEnhanced
             y += rowGap;
 
             PlaceTaskbarRow("字体大小", numFontSize, y, labelX, controlX, labelW, controlW, controlH);
-            y += rowGap;
-            PlaceTaskbarRow("水平偏移", numOffset, y, labelX, controlX, labelW, controlW, controlH);
             y += rowGap;
             PlaceTaskbarRow("列间距", numInterItemGap, y, labelX, controlX, labelW, controlW, controlH);
             y += rowGap;
@@ -805,6 +972,7 @@ namespace HimpqEnhanced
             y += rowGap;
             PlaceTaskbarRow("阴影颜色", rowTaskbarShadowColor, y, labelX, controlX, labelW, controlW + 140, controlH);
             AutoScrollMinSize = new Size(0, y + controlH + 64);
+            UpdateTaskbarModeControls();
         }
 
         private void PlaceTaskbarRow(string labelText, Control control, int y, int labelX, int controlX, int labelW, int controlW, int controlH)
@@ -819,6 +987,38 @@ namespace HimpqEnhanced
 
             control.Location = new Point(controlX, y);
             control.Size = new Size(controlW, controlH);
+        }
+
+        private void UpdateTaskbarModeControls()
+        {
+            if (checkTaskbarFloating is null) return;
+
+            bool floating = checkTaskbarFloating.Checked;
+            comboTaskbarPosition.Enabled = !floating;
+            numOffset.Enabled = !floating;
+            numFloatingX.Enabled = floating;
+            numFloatingY.Enabled = floating;
+            checkFloatingClickThrough.Enabled = floating;
+            checkFloatingTopmost.Enabled = floating;
+        }
+
+        private void RefreshFloatingPositionControls()
+        {
+            if (numFloatingX is null || numFloatingY is null) return;
+
+            var data = HimpqConfig.Load();
+            if (data.taskbar_floating_position_initialized != 1) return;
+
+            bool wasLoading = _loading;
+            _loading = true;
+            SetNumericValue(numFloatingX, data.taskbar_floating_x);
+            SetNumericValue(numFloatingY, data.taskbar_floating_y);
+            _loading = wasLoading;
+        }
+
+        private static void SetNumericValue(NumericUpDown numeric, int value)
+        {
+            numeric.Value = Math.Clamp(value, (int)numeric.Minimum, (int)numeric.Maximum);
         }
 
         private void AddSectionBackPanel(int x, int y, int width, int height)
@@ -863,32 +1063,42 @@ namespace HimpqEnhanced
             return "未知";
         }
 
+        private static void SelectModeItem(RComboBox combo, int value)
+        {
+            foreach (ModeItem item in combo.Items)
+            {
+                if (item.Value == value)
+                {
+                    combo.SelectedItem = item;
+                    return;
+                }
+            }
+
+            combo.SelectedIndex = 0;
+        }
+
         private void LoadConfig()
         {
             var data = HimpqConfig.Load();
 
             checkDebug.Checked = data.debug_mode == 1;
             checkTaskbarEnabled.Checked = data.taskbar_window_enabled == 1;
+            checkTaskbarFloating.Checked = data.taskbar_window_floating_enabled == 1;
             comboTaskbarPosition.SelectedIndex = data.taskbar_window_position == "right" ? 1 : 0;
             numFontSize.Value = data.font_size > 0 ? data.font_size : 8;
             numOffset.Value = data.taskbar_window_offset;
+            SetNumericValue(numFloatingX, data.taskbar_floating_x);
+            SetNumericValue(numFloatingY, data.taskbar_floating_y);
+            checkFloatingClickThrough.Checked = data.taskbar_floating_click_through == 1;
+            checkFloatingTopmost.Checked = data.taskbar_floating_topmost == 1;
             numInterItemGap.Value = data.inter_item_gap;
             numRowGap.Value = data.row_gap;
             numRefreshInterval.Value = Math.Clamp(data.taskbar_refresh_interval, (int)numRefreshInterval.Minimum, (int)numRefreshInterval.Maximum);
             checkTaskbarTextShadow.Checked = HimpqConfig.ResolveTaskbarShadowEnabled(data, RForm.IsDarkThemeActive());
+            UpdateTaskbarModeControls();
 
-            bool modeFound = false;
-            foreach (ModeItem item in comboDefaultMode.Items)
-            {
-                if (item.Value == data.default_performance_mode)
-                {
-                    comboDefaultMode.SelectedItem = item;
-                    modeFound = true;
-                    break;
-                }
-            }
-            if (!modeFound)
-                comboDefaultMode.SelectedIndex = 0;
+            SelectModeItem(comboDefaultMode, data.default_performance_mode);
+            SelectModeItem(comboUnplugMode, data.unplug_performance_mode);
 
             for (int i = 0; i < modes.Length; i++)
             {
@@ -918,28 +1128,46 @@ namespace HimpqEnhanced
             }
         }
 
-        private void SaveHimpqConfig()
+        private void SaveHimpqConfig(bool saveFloatingPosition = false)
         {
+            if (_loading) return;
+
             var data = HimpqConfig.Load();
             data.debug_mode = checkDebug.Checked ? 1 : 0;
             data.taskbar_window_enabled = checkTaskbarEnabled.Checked ? 1 : 0;
+            data.taskbar_window_floating_enabled = checkTaskbarFloating.Checked ? 1 : 0;
             data.taskbar_window_position = comboTaskbarPosition.SelectedIndex == 1 ? "right" : "left";
             data.font_size = (int)numFontSize.Value;
             data.taskbar_window_offset = (int)numOffset.Value;
+            data.taskbar_floating_click_through = checkFloatingClickThrough.Checked ? 1 : 0;
+            data.taskbar_floating_topmost = checkFloatingTopmost.Checked ? 1 : 0;
+            if (saveFloatingPosition || data.taskbar_floating_position_initialized == 1)
+            {
+                data.taskbar_floating_x = (int)numFloatingX.Value;
+                data.taskbar_floating_y = (int)numFloatingY.Value;
+                data.taskbar_floating_position_initialized = 1;
+            }
             data.inter_item_gap = (int)numInterItemGap.Value;
             data.row_gap = (int)numRowGap.Value;
             data.taskbar_refresh_interval = (int)numRefreshInterval.Value;
             if (comboDefaultMode.SelectedItem is ModeItem selected)
                 data.default_performance_mode = selected.Value;
+            if (comboUnplugMode.SelectedItem is ModeItem unplugSelected)
+                data.unplug_performance_mode = unplugSelected.Value;
             HimpqConfig.Save(data);
         }
 
         private void ApplyTaskbarState()
         {
             if (checkTaskbarEnabled.Checked)
+            {
                 Main.ShowTaskbarWindow();
+                BeginInvoke((Action)RefreshFloatingPositionControls);
+            }
             else
+            {
                 Main.HideTaskbarWindow();
+            }
         }
 
         private void RefreshTaskbarPosition()
