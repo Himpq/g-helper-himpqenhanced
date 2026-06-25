@@ -10,10 +10,14 @@ namespace GHelper.AutoUpdate
 {
     public class AutoUpdateControl
     {
+        private const string ReleaseRepository = "Himpq/g-helper-himpqenhanced";
+        private const string VersionSuffix = "-he";
+        private static readonly string ReleasesUrl = $"https://github.com/{ReleaseRepository}/releases";
+        private static readonly string LatestReleaseApiUrl = $"https://api.github.com/repos/{ReleaseRepository}/releases/latest";
 
         SettingsForm settings;
 
-        public string versionUrl = "https://github.com/seerge/g-helper/releases";
+        public string versionUrl = ReleasesUrl;
         public bool update = false;
 
         static long lastUpdate;
@@ -21,8 +25,7 @@ namespace GHelper.AutoUpdate
         public AutoUpdateControl(SettingsForm settingsForm)
         {
             settings = settingsForm;
-            var appVersion = new Version(Assembly.GetExecutingAssembly().GetName().Version.ToString());
-            settings.SetVersionLabel(Properties.Strings.VersionLabel + $": {appVersion.Major}.{appVersion.Minor}.{appVersion.Build}");
+            settings.SetVersionLabel(Properties.Strings.VersionLabel + $": {GetDisplayVersion()}");
         }
 
         public void CheckForUpdates()
@@ -75,12 +78,13 @@ namespace GHelper.AutoUpdate
                 using (var httpClient = new HttpClient())
                 {
                     httpClient.DefaultRequestHeaders.Add("User-Agent", "G-Helper App");
-                    var json = await httpClient.GetStringAsync("https://api.github.com/repos/seerge/g-helper/releases/latest");
+                    var json = await httpClient.GetStringAsync(LatestReleaseApiUrl);
                     var config = JsonSerializer.Deserialize<JsonElement>(json);
-                    var tag = config.GetProperty("tag_name").ToString().Replace("v", "");
+                    var tag = config.GetProperty("tag_name").ToString();
+                    var releaseDisplayVersion = NormalizeDisplayVersion(tag);
                     var assets = config.GetProperty("assets");
 
-                    string url = null;
+                    string? url = null;
 
                     for (int i = 0; i < assets.GetArrayLength(); i++)
                     {
@@ -89,17 +93,19 @@ namespace GHelper.AutoUpdate
                     }
 
                     if (url is null)
-                        url = assets[0].GetProperty("browser_download_url").ToString();
+                    {
+                        Logger.WriteLine($"Latest {ReleaseRepository} release {releaseDisplayVersion} has no zip asset");
+                        return;
+                    }
 
-                    var gitVersion = new Version(tag);
-                    var appVersion = new Version(Assembly.GetExecutingAssembly().GetName().Version.ToString());
-                    //appVersion = new Version("0.50.0.0"); 
+                    var gitVersion = GetComparableVersion(tag);
+                    var appVersion = GetComparableVersion(GetDisplayVersion());
 
                     if (gitVersion.CompareTo(appVersion) > 0)
                     {
                         versionUrl = url;
                         update = true;
-                        settings.SetVersionLabel(Properties.Strings.DownloadUpdate + $": {appVersion.Major}.{appVersion.Minor}.{appVersion.Build} → {tag}", true);
+                        settings.SetVersionLabel(Properties.Strings.DownloadUpdate + $": {GetDisplayVersion()} → {releaseDisplayVersion}", true);
 
                         string[] args = Environment.GetCommandLineArgs();
                         if (force || args.Length > 1 && args[1] == "autoupdate")
@@ -108,25 +114,25 @@ namespace GHelper.AutoUpdate
                             return;
                         }
 
-                        if (AppConfig.GetString("skip_version") != tag)
+                        if (AppConfig.GetString("skip_version") != releaseDisplayVersion)
                         {
                             DialogResult dialogResult = DialogResult.No;
 
                             settings.Invoke((System.Windows.Forms.MethodInvoker)delegate
                             {
-                                dialogResult = MessageBox.Show(settings, Properties.Strings.DownloadUpdate + ": G-Helper " + tag + "?", "Update", MessageBoxButtons.YesNo);
+                                dialogResult = MessageBox.Show(settings, Properties.Strings.DownloadUpdate + ": G-Helper HimpqEnhanced " + releaseDisplayVersion + "?", "Update", MessageBoxButtons.YesNo);
                             });
                             
                             if (dialogResult == DialogResult.Yes)
                                 AutoUpdate(url);
                             else
-                                AppConfig.Set("skip_version", tag);
+                                AppConfig.Set("skip_version", releaseDisplayVersion);
                         }
 
                     }
                     else
                     {
-                        Logger.WriteLine($"Latest version {appVersion}");
+                        Logger.WriteLine($"Latest version {GetDisplayVersion()}");
                     }
 
                 }
@@ -136,6 +142,44 @@ namespace GHelper.AutoUpdate
                 Logger.WriteLine("Failed to check for updates:" + ex.Message);
             }
 
+        }
+
+        private static string GetDisplayVersion()
+        {
+            var informationalVersion = Assembly.GetExecutingAssembly()
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+            if (!string.IsNullOrWhiteSpace(informationalVersion))
+                return informationalVersion.Split('+')[0];
+
+            var appVersion = Assembly.GetExecutingAssembly().GetName().Version
+                ?? throw new InvalidOperationException("Assembly version is missing");
+            return $"{appVersion.Major}.{appVersion.Minor}.{Math.Max(appVersion.Build, 0)}{VersionSuffix}";
+        }
+
+        private static string NormalizeDisplayVersion(string tag)
+        {
+            string normalized = tag.Trim();
+            if (normalized.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized[1..];
+            return normalized;
+        }
+
+        private static Version GetComparableVersion(string versionText)
+        {
+            string normalized = NormalizeDisplayVersion(versionText);
+            int suffixIndex = normalized.IndexOf('-', StringComparison.Ordinal);
+            if (suffixIndex >= 0)
+                normalized = normalized[..suffixIndex];
+
+            if (!Version.TryParse(normalized, out var version))
+                throw new InvalidOperationException($"Invalid release version: {versionText}");
+
+            return new Version(
+                version.Major,
+                version.Minor,
+                Math.Max(version.Build, 0),
+                Math.Max(version.Revision, 0));
         }
 
         public static string EscapeString(string input)

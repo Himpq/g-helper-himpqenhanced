@@ -46,12 +46,16 @@ public static class HardwareControl
     public static int? vramUsedMb;
     public static int? ramUsedMb;
 
-    // Set by the overlay so ReadSensorsOverlay skips sensors that won't be
+    // Set by sensor consumers so ReadSensorsOverlay skips sensors that won't be
     // displayed in the current mode (fan ACPI calls and CPU usage counter).
     public static bool readFans;
     public static bool readUsage;
     public static bool readMemory;
     public static bool readPower;
+    public static bool taskbarReadFans;
+    public static bool taskbarReadUsage;
+    public static bool taskbarReadMemory;
+    public static bool taskbarReadPower;
 
     static long lastUpdate;
 
@@ -753,7 +757,12 @@ public static class HardwareControl
     {
         if (Program.acpi is null) return;
 
-        if (readFans)
+        bool needFans = readFans || taskbarReadFans;
+        bool needUsage = readUsage || taskbarReadUsage;
+        bool needMemory = readMemory || taskbarReadMemory;
+        bool needPower = readPower || taskbarReadPower;
+
+        if (needFans)
         {
             cpuFanRPM = Program.acpi.GetFan(AsusFan.CPU) * 100;
             gpuFanRPM = Program.acpi.GetFan(AsusFan.GPU) * 100;
@@ -767,7 +776,7 @@ public static class HardwareControl
         cpuTemp = GetCPUTemp();
         gpuTemp = GetGPUTemp();
 
-        if (readUsage)
+        if (needUsage)
         {
             cpuUsage = GetCPUUsage();
             try { gpuUsage = GpuControl?.GetGpuUse(); } catch { gpuUsage = null; }
@@ -778,7 +787,7 @@ public static class HardwareControl
             gpuUsage = null;
         }
 
-        if (readMemory)
+        if (needMemory)
         {
             var ram = GetRAMInfo();
             ramUsage = ram?.percent;
@@ -803,7 +812,7 @@ public static class HardwareControl
             vramUsedMb = null;
         }
 
-        if (readPower)
+        if (needPower)
         {
             InitCPUPowerAsync();
 

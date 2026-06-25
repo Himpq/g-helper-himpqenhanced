@@ -215,6 +215,8 @@ namespace GHelper
                     break;
                 default:
                     Task.Run(Startup.StartupCheck);
+                    HimpqEnhanced.Main.Init();
+                    HimpqEnhanced.Main.ShowTaskbarWindow();
                     break;
             }
 
@@ -236,6 +238,7 @@ namespace GHelper
             modeControl.ShutdownReset();
             BatteryControl.AutoBattery();
             InputDispatcher.ShutdownStatusLed();
+            HimpqEnhanced.Main.StopTaskbarWindow();
         }
 
         private static void SystemEvents_SessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -263,40 +266,38 @@ namespace GHelper
         static void SystemEvents_UserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
         {
 
-            if (Math.Abs(DateTimeOffset.Now.ToUnixTimeMilliseconds() - lastTheme) < 2000) return;
+            if (e.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.VisualStyle)) return;
 
-            switch (e.Category)
+            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            if (Math.Abs(now - lastTheme) < 2000) return;
+
+            bool changed = settingsForm.InitTheme();
+            settingsForm.InitContextMenuTheme();
+            settingsForm.VisualiseIcon();
+            settingsForm.VisualiseFnLock();
+            settingsForm.VisualiseBatteryFull();
+            HimpqEnhanced.Main.RefreshTaskbarTheme();
+
+            if (changed)
             {
-                case UserPreferenceCategory.General:
-                    bool changed = settingsForm.InitTheme();
-                    settingsForm.InitContextMenuTheme();
-                    settingsForm.VisualiseIcon();
-                    settingsForm.VisualiseFnLock();
-                    settingsForm.VisualiseBatteryFull();
-
-                    if (changed)
-                    {
-                        Debug.WriteLine("Theme Changed");
-                        lastTheme = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                    }
-
-                    if (settingsForm.fansForm is not null && settingsForm.fansForm.Text != "")
-                        settingsForm.fansForm.InitTheme();
-
-                    if (settingsForm.extraForm is not null && settingsForm.extraForm.Text != "")
-                        settingsForm.extraForm.InitTheme();
-
-                    if (settingsForm.updatesForm is not null && settingsForm.updatesForm.Text != "")
-                        settingsForm.updatesForm.InitTheme();
-
-                    if (settingsForm.matrixForm is not null && settingsForm.matrixForm.Text != "")
-                        settingsForm.matrixForm.InitTheme();
-
-                    if (settingsForm.handheldForm is not null && settingsForm.handheldForm.Text != "")
-                        settingsForm.handheldForm.InitTheme();
-
-                    break;
+                Debug.WriteLine("Theme Changed");
+                lastTheme = now;
             }
+
+            if (settingsForm.fansForm is not null && settingsForm.fansForm.Text != "")
+                settingsForm.fansForm.InitTheme();
+
+            if (settingsForm.extraForm is not null && settingsForm.extraForm.Text != "")
+                settingsForm.extraForm.InitTheme();
+
+            if (settingsForm.updatesForm is not null && settingsForm.updatesForm.Text != "")
+                settingsForm.updatesForm.InitTheme();
+
+            if (settingsForm.matrixForm is not null && settingsForm.matrixForm.Text != "")
+                settingsForm.matrixForm.InitTheme();
+
+            if (settingsForm.handheldForm is not null && settingsForm.handheldForm.Text != "")
+                settingsForm.handheldForm.InitTheme();
         }
 
 

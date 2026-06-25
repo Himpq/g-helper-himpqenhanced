@@ -22,7 +22,7 @@ namespace GHelper
     {
         ContextMenuStrip contextMenuStrip = new CustomContextMenu();
         ToolStripMenuItem menuEco, menuStandard, menuUltimate, menuOptimized;
-        DonateControl donateControl;
+        HimpqEnhanced.HimpqSettings himpqSettings;
 
         public GPUModeControl gpuControl;
         public AllyControl allyControl;
@@ -95,7 +95,7 @@ namespace GHelper
             buttonMatrix.Text = Properties.Strings.PictureGif;
             buttonQuit.Text = Properties.Strings.Quit;
             buttonUpdates.Text = Properties.Strings.Updates;
-            buttonDonate.Text = Properties.Strings.Donate;
+            buttonDonate.Text = "设置";
 
             buttonController.Text = Properties.Strings.Controller;
             labelAlly.Text = Properties.Strings.AllyController;
@@ -273,7 +273,7 @@ namespace GHelper
             buttonAutoTDP.Click += ButtonAutoTDP_Click;
             buttonAutoTDP.BorderColor = colorTurbo;
 
-            Text = "G-Helper " + (ProcessHelper.IsUserAdministrator() ? "—" : "-") + " " + AppConfig.GetModelShort();
+            Text = "G-Helper-HimpqEnhanced " + (ProcessHelper.IsUserAdministrator() ? "—" : "-") + " " + AppConfig.GetModelShort();
             TopMost = AppConfig.Is("topmost");
 
             //This will auto position the window again when it resizes. Might mess with position if people drag the window somewhere else.
@@ -285,8 +285,26 @@ namespace GHelper
             labelVisual.Click += LabelVisual_Click;
             labelCharge.Click += LabelCharge_Click;
 
-            donateControl = new DonateControl(this, buttonDonate);
-            donateControl.Init();
+            himpqSettings = new HimpqEnhanced.HimpqSettings();
+            AddOwnedForm(himpqSettings);
+            buttonDonate.Click += (_, _) =>
+            {
+                if (himpqSettings is null || himpqSettings.IsDisposed)
+                {
+                    himpqSettings = new HimpqEnhanced.HimpqSettings();
+                    AddOwnedForm(himpqSettings);
+                }
+                if (himpqSettings.Visible)
+                {
+                    himpqSettings.Hide();
+                }
+                else
+                {
+                    himpqSettings.Left = Left - himpqSettings.Width - 5;
+                    himpqSettings.Top = Top;
+                    himpqSettings.Show();
+                }
+            };
 
             labelBacklight.ForeColor = colorStandard;
             labelBacklight.Click += LabelBacklight_Click;
@@ -927,7 +945,7 @@ namespace GHelper
                 contextMenuStrip.ForeColor = this.ForeColor;
             }
 
-            donateControl?.ApplyTheme();
+            if (himpqSettings is not null && !himpqSettings.IsDisposed) himpqSettings.InitTheme();
         }
 
         private void ButtonXGM_Click(object? sender, EventArgs e)

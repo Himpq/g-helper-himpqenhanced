@@ -107,6 +107,8 @@ namespace GHelper.UI
             return (int)registryValueObject <= 0;
         }
 
+        public static bool IsDarkThemeActive() => IsDarkTheme();
+
         public bool InitTheme(bool setDPI = false)
         {
             bool newDarkTheme = IsDarkTheme();
