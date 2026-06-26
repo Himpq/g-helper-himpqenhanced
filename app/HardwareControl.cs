@@ -3,6 +3,7 @@ using GHelper.Battery;
 using GHelper.Fan;
 using GHelper.Gpu;
 using GHelper.Gpu.AMD;
+using GHelper.Gpu.Intel;
 using GHelper.Gpu.NVidia;
 using GHelper.Helpers;
 using System.Diagnostics;
@@ -19,6 +20,9 @@ public static class HardwareControl
 
     public static float? cpuPower;
     public static float? gpuPower;
+    public static float? totalPower;
+    public static int? cpuFrequencyMHz;
+    public static int? gpuFrequencyMHz;
 
     public static decimal? batteryRate = 0;
     public static decimal batteryHealth = -1;
@@ -36,6 +40,7 @@ public static class HardwareControl
 
     public static int? cpuFanRPM;
     public static int? gpuFanRPM;
+    public static int? midFanRPM;
 
     public static int? gpuUse;
 
@@ -52,10 +57,12 @@ public static class HardwareControl
     public static bool readUsage;
     public static bool readMemory;
     public static bool readPower;
+    public static bool readFrequency;
     public static bool taskbarReadFans;
     public static bool taskbarReadUsage;
     public static bool taskbarReadMemory;
     public static bool taskbarReadPower;
+    public static bool taskbarReadFrequency;
 
     static long lastUpdate;
 
@@ -76,6 +83,7 @@ public static class HardwareControl
         uint OutputBufferLength);
 
     private const int SystemBatteryState = 5;
+    private const int ProcessorInformation = 11;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SYSTEM_BATTERY_STATE
@@ -94,6 +102,17 @@ public static class HardwareControl
         public uint EstimatedTime;
         public uint DefaultAlert1;
         public uint DefaultAlert2;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESSOR_POWER_INFORMATION
+    {
+        public uint Number;
+        public uint MaxMhz;
+        public uint CurrentMhz;
+        public uint MhzLimit;
+        public uint MaxIdleState;
+        public uint CurrentIdleState;
     }
 
     private static SYSTEM_BATTERY_STATE? GetNativeBatteryState()
@@ -490,6 +509,13 @@ public static class HardwareControl
 
     public static float? GetGPUTemp()
     {
+        bool dedicatedActive = IsDedicatedGpuActiveForSensors();
+        if (!dedicatedActive && GetIntegratedGPUTemperature() is { } integratedTemp)
+        {
+            gpuTemp = integratedTemp;
+            return gpuTemp;
+        }
+
         try
         {
             gpuTemp = GpuControl?.GetCurrentTemperature();
@@ -497,14 +523,31 @@ public static class HardwareControl
         }
         catch (Exception ex)
         {
-            gpuTemp = -1;
-            //Debug.WriteLine("Failed reading GPU temp :" + ex.Message);
+            gpuTemp = null;
+            LogSensorReadFailureOnce("dGPU temperature", ex);
         }
 
         if (gpuTemp is null || gpuTemp < 0)
         {
-            int acpiTemp = Program.acpi.DeviceGet(AsusACPI.Temp_GPU);
-            gpuTemp = (acpiTemp > 0 && acpiTemp < 125) ? acpiTemp : null;
+            if (GetIntegratedGPUTemperature() is { } integratedTempAfterRead)
+            {
+                gpuTemp = integratedTempAfterRead;
+                return gpuTemp;
+            }
+        }
+
+        if (gpuTemp is null || gpuTemp < 0)
+        {
+            try
+            {
+                int acpiTemp = Program.acpi.DeviceGet(AsusACPI.Temp_GPU);
+                gpuTemp = (acpiTemp > 0 && acpiTemp < 125) ? acpiTemp : null;
+            }
+            catch (Exception ex)
+            {
+                gpuTemp = null;
+                LogSensorReadFailureOnce("ACPI GPU temperature", ex);
+            }
         }
 
         return gpuTemp;
@@ -670,19 +713,188 @@ public static class HardwareControl
 
     private static AmdGpuControl? _amdApuControl;
     private static bool _amdApuPowerFailed;
+    private static long _lastAmdApuControlCreateFailure = -AmdApuControlRetryMs;
+    private const int AmdApuControlRetryMs = 10_000;
+    private static IntelGpuControl? _intelGpuControl;
+    private static long _lastIntelGpuControlCreateFailure = -IntelGpuControlRetryMs;
+    private const int IntelGpuControlRetryMs = 10_000;
+    private static readonly object _sensorFailureLock = new();
+    private static readonly HashSet<string> _loggedSensorReadFailures = new();
 
-    private static float? GetAmdApuPower()
+    private static void LogSensorReadFailureOnce(string source, Exception ex)
+    {
+        lock (_sensorFailureLock)
+        {
+            if (_loggedSensorReadFailures.Add(source))
+                Logger.WriteLine(source + " read failed: " + ex.Message);
+        }
+        Debug.WriteLine(source + " read failed: " + ex.Message);
+    }
+
+    private static bool IsDedicatedGpuActiveForSensors()
+    {
+        try
+        {
+            if (GpuControl is null || !GpuControl.IsValid) return false;
+
+            if (GpuControl is NvidiaGpuControl nvidia)
+                return nvidia.IsGpuActive();
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogSensorReadFailureOnce("dGPU state", ex);
+            return false;
+        }
+    }
+
+    private static AmdGpuControl? GetAmdApuControl()
+    {
+        if (!PawnIO.CpuInfo.IsAMD) return null;
+
+        try
+        {
+            if (GpuControl is AmdGpuControl currentAmd)
+                return currentAmd.HasIntegratedGpu ? currentAmd : null;
+
+            if (_amdApuControl is null)
+            {
+                if (Environment.TickCount64 - _lastAmdApuControlCreateFailure < AmdApuControlRetryMs)
+                    return null;
+
+                _amdApuControl = new AmdGpuControl(true);
+                if (!_amdApuControl.HasIntegratedGpu)
+                {
+                    _amdApuControl.Dispose();
+                    _amdApuControl = null;
+                    _lastAmdApuControlCreateFailure = Environment.TickCount64;
+                    return null;
+                }
+            }
+
+            return _amdApuControl;
+        }
+        catch (Exception ex)
+        {
+            _amdApuControl?.Dispose();
+            _amdApuControl = null;
+            _lastAmdApuControlCreateFailure = Environment.TickCount64;
+            LogSensorReadFailureOnce("AMD iGPU control", ex);
+            return null;
+        }
+    }
+
+    private static IntelGpuControl? GetIntelGpuControl()
+    {
+        if (!PawnIO.CpuInfo.IsIntel) return null;
+
+        try
+        {
+            if (_intelGpuControl is not null && _intelGpuControl.IsValid)
+                return _intelGpuControl;
+
+            if (Environment.TickCount64 - _lastIntelGpuControlCreateFailure < IntelGpuControlRetryMs)
+                return null;
+
+            _intelGpuControl?.Dispose();
+            _intelGpuControl = new IntelGpuControl();
+            if (!_intelGpuControl.IsValid)
+            {
+                _intelGpuControl.Dispose();
+                _intelGpuControl = null;
+                _lastIntelGpuControlCreateFailure = Environment.TickCount64;
+                return null;
+            }
+
+            return _intelGpuControl;
+        }
+        catch (Exception ex)
+        {
+            _intelGpuControl?.Dispose();
+            _intelGpuControl = null;
+            _lastIntelGpuControlCreateFailure = Environment.TickCount64;
+            LogSensorReadFailureOnce("Intel iGPU control", ex);
+            return null;
+        }
+    }
+
+    private static int? GetIntegratedGPUTemperature()
+    {
+        try
+        {
+            int? temp = GetAmdApuControl()?.GetIntegratedTemperature();
+            if (temp is > 0 and < 125) return temp;
+        }
+        catch (Exception ex)
+        {
+            LogSensorReadFailureOnce("Integrated GPU temperature", ex);
+        }
+
+        try
+        {
+            int? temp = GetIntelGpuControl()?.GetIntegratedTemperature();
+            return temp is > 0 and < 125 ? temp : null;
+        }
+        catch (Exception ex)
+        {
+            LogSensorReadFailureOnce("Integrated GPU temperature", ex);
+            return null;
+        }
+    }
+
+    private static int? GetIntegratedGPUFrequency()
+    {
+        try
+        {
+            int? clock = GetAmdApuControl()?.GetIntegratedGpuClock();
+            if (clock is > 0 and < 5000) return clock;
+        }
+        catch (Exception ex)
+        {
+            LogSensorReadFailureOnce("Integrated GPU clock", ex);
+        }
+
+        try
+        {
+            int? clock = GetIntelGpuControl()?.GetIntegratedGpuClock();
+            return clock is > 0 and < 5000 ? clock : null;
+        }
+        catch (Exception ex)
+        {
+            LogSensorReadFailureOnce("Integrated GPU clock", ex);
+            return null;
+        }
+    }
+
+    private static float? GetAmdIntegratedGPUPower()
     {
         if (_amdApuPowerFailed || !PawnIO.CpuInfo.IsAMD) return null;
         try
         {
-            AmdGpuControl amd = GpuControl as AmdGpuControl ?? (_amdApuControl ??= new AmdGpuControl());
+            AmdGpuControl? amd = GetAmdApuControl();
+            if (amd is null) return null;
             int power = amd.GetiGpuPower();
             return power > 0 ? power : null;
         }
-        catch
+        catch (Exception ex)
         {
             _amdApuPowerFailed = true;
+            LogSensorReadFailureOnce("AMD iGPU power", ex);
+            return null;
+        }
+    }
+
+    private static float? GetIntelIntegratedGPUPower()
+    {
+        try
+        {
+            float? power = GetIntelGpuControl()?.GetIntegratedGpuPower();
+            return power is > 0 and < 300 ? power : null;
+        }
+        catch (Exception ex)
+        {
+            LogSensorReadFailureOnce("Intel iGPU power", ex);
             return null;
         }
     }
@@ -721,6 +933,16 @@ public static class HardwareControl
 
     public static float? GetGPUPower()
     {
+        bool dedicatedActive = IsDedicatedGpuActiveForSensors();
+        if (!dedicatedActive)
+        {
+            if (GetAmdIntegratedGPUPower() is { } amdIntegratedPower)
+                return amdIntegratedPower;
+
+            if (GetIntelIntegratedGPUPower() is { } intelIntegratedPower)
+                return intelIntegratedPower;
+        }
+
         try
         {
             float? power = GpuControl?.GetGpuPower();
@@ -730,6 +952,70 @@ public static class HardwareControl
         {
             Debug.WriteLine("Failed reading GPU power: " + ex.Message);
         }
+
+        if (GetAmdIntegratedGPUPower() is { } amdIntegratedPowerAfterRead)
+            return amdIntegratedPowerAfterRead;
+
+        if (GetIntelIntegratedGPUPower() is { } intelIntegratedPowerAfterRead)
+            return intelIntegratedPowerAfterRead;
+
+        return null;
+    }
+
+    public static int? GetCPUFrequency()
+    {
+        int count = Environment.ProcessorCount;
+        if (count <= 0) return null;
+
+        int size = Marshal.SizeOf<PROCESSOR_POWER_INFORMATION>();
+        IntPtr ptr = Marshal.AllocHGlobal(size * count);
+        try
+        {
+            uint status = CallNtPowerInformation(ProcessorInformation, IntPtr.Zero, 0, ptr, (uint)(size * count));
+            if (status != 0) return null;
+
+            long total = 0;
+            int valid = 0;
+            for (int i = 0; i < count; i++)
+            {
+                var info = Marshal.PtrToStructure<PROCESSOR_POWER_INFORMATION>(IntPtr.Add(ptr, i * size));
+                if (info.CurrentMhz == 0) continue;
+
+                total += info.CurrentMhz;
+                valid++;
+            }
+
+            return valid > 0 ? (int)Math.Round((double)total / valid) : null;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine("CPU frequency reading failed: " + ex.Message);
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(ptr);
+        }
+    }
+
+    public static int? GetGPUFrequency()
+    {
+        bool dedicatedActive = IsDedicatedGpuActiveForSensors();
+        if (!dedicatedActive && GetIntegratedGPUFrequency() is { } integratedClock)
+            return integratedClock;
+
+        try
+        {
+            int? clock = GpuControl?.GetGpuClock();
+            if (clock is > 0) return clock;
+        }
+        catch (Exception ex)
+        {
+            LogSensorReadFailureOnce("dGPU clock", ex);
+        }
+
+        if (GetIntegratedGPUFrequency() is { } integratedClockAfterRead)
+            return integratedClockAfterRead;
 
         return null;
     }
@@ -761,16 +1047,19 @@ public static class HardwareControl
         bool needUsage = readUsage || taskbarReadUsage;
         bool needMemory = readMemory || taskbarReadMemory;
         bool needPower = readPower || taskbarReadPower;
+        bool needFrequency = readFrequency || taskbarReadFrequency;
 
         if (needFans)
         {
-            cpuFanRPM = Program.acpi.GetFan(AsusFan.CPU) * 100;
-            gpuFanRPM = Program.acpi.GetFan(AsusFan.GPU) * 100;
+            cpuFanRPM = GetFanRPM(AsusFan.CPU);
+            gpuFanRPM = GetFanRPM(AsusFan.GPU);
+            midFanRPM = GetFanRPM(AsusFan.Mid);
         }
         else
         {
             cpuFanRPM = null;
             gpuFanRPM = null;
+            midFanRPM = null;
         }
 
         cpuTemp = GetCPUTemp();
@@ -820,7 +1109,7 @@ public static class HardwareControl
             // If the counter is absent or returns 0 for several consecutive ticks (e.g. after
             // a game exits and invalidates the Intel Energy Meter counter), clear the stale
             // value so the overlay shows "--" rather than the last-seen wattage.
-            float? newCpu = GetCPUPower() ?? GetIntelMsrPower() ?? GetAmdApuPower();
+            float? newCpu = GetCPUPower() ?? GetIntelMsrPower();
             if (newCpu > 0)
             {
                 cpuPower = newCpu;
@@ -833,12 +1122,42 @@ public static class HardwareControl
             }
 
             gpuPower = GetGPUPower();
+            totalPower = GetTotalPower();
         }
         else
         {
             cpuPower = null;
             gpuPower = null;
+            totalPower = null;
         }
+
+        if (needFrequency)
+        {
+            cpuFrequencyMHz = GetCPUFrequency();
+            gpuFrequencyMHz = GetGPUFrequency();
+        }
+        else
+        {
+            cpuFrequencyMHz = null;
+            gpuFrequencyMHz = null;
+        }
+    }
+
+    private static float? GetTotalPower()
+    {
+        if (cpuPower is not { } cpu || cpu < 0) return null;
+
+        float total = cpu;
+        if (gpuPower is { } gpu && gpu > 0)
+            total += gpu;
+
+        return total;
+    }
+
+    private static int? GetFanRPM(AsusFan fan)
+    {
+        int value = Program.acpi.GetFan(fan);
+        return value >= 0 ? value * 100 : null;
     }
 
     public static double GetBatteryChargePercentage()
@@ -968,5 +1287,9 @@ public static class HardwareControl
     {
         _cpuTempCounter?.Dispose();
         _cpuTempCounter = null;
+        _amdApuControl?.Dispose();
+        _amdApuControl = null;
+        _intelGpuControl?.Dispose();
+        _intelGpuControl = null;
     }
 }

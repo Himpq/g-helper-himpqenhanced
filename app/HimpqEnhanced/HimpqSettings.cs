@@ -69,12 +69,8 @@ namespace HimpqEnhanced
                     e.Cancel = true;
                     Hide();
                 }
-                else if (e.CloseReason == CloseReason.FormOwnerClosing && refreshTimer is not null)
-                {
-                    refreshTimer.Stop();
-                    refreshTimer.Dispose();
-                    refreshTimer = null;
-                }
+                else
+                    DisposeRefreshTimer();
             };
 
             allPowerPlans = EnumeratePowerPlans();
@@ -93,6 +89,15 @@ namespace HimpqEnhanced
                 labelCurrent.Text = "当前电源计划: " + GetActivePlanName();
             };
             refreshTimer.Start();
+        }
+
+        private void DisposeRefreshTimer()
+        {
+            if (refreshTimer is null) return;
+
+            refreshTimer.Stop();
+            refreshTimer.Dispose();
+            refreshTimer = null;
         }
 
         public new bool InitTheme(bool setDPI = false)

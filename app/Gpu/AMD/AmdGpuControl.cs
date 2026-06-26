@@ -9,67 +9,81 @@ public class AmdGpuControl : IGpuControl
 {
     private bool _isReady;
     private nint _adlContextHandle;
+    private readonly object _sensorFailureLock = new();
+    private readonly HashSet<string> _loggedSensorFailures = new();
 
     private readonly ADLAdapterInfo _internalDiscreteAdapter;
     private readonly ADLAdapterInfo? _iGPU;
 
     public bool IsNvidia => false;
 
-    public string FullName => _internalDiscreteAdapter!.AdapterName;
+    public string FullName => IsValid
+        ? _internalDiscreteAdapter.AdapterName
+        : (_iGPU is { } adapter ? adapter.AdapterName : "");
+
+    public bool HasIntegratedGpu => _adlContextHandle != nint.Zero && _iGPU is not null;
 
     private ADLAdapterInfo? FindByType(ADLAsicFamilyType type = ADLAsicFamilyType.Discrete)
     {
-        ADL2_Adapter_NumberOfAdapters_Get(_adlContextHandle, out int numberOfAdapters);
-        if (numberOfAdapters <= 0)
-            return null;
-
-        ADLAdapterInfoArray osAdapterInfoData = new();
-        int osAdapterInfoDataSize = Marshal.SizeOf(osAdapterInfoData);
-        nint AdapterBuffer = Marshal.AllocCoTaskMem(osAdapterInfoDataSize);
         try
         {
-            Marshal.StructureToPtr(osAdapterInfoData, AdapterBuffer, false);
-            if (ADL2_Adapter_AdapterInfo_Get(_adlContextHandle, AdapterBuffer, osAdapterInfoDataSize) != Adl2.ADL_SUCCESS)
+            ADL2_Adapter_NumberOfAdapters_Get(_adlContextHandle, out int numberOfAdapters);
+            if (numberOfAdapters <= 0)
                 return null;
 
-            osAdapterInfoData = (ADLAdapterInfoArray)Marshal.PtrToStructure(AdapterBuffer, osAdapterInfoData.GetType())!;
+            ADLAdapterInfoArray osAdapterInfoData = new();
+            int osAdapterInfoDataSize = Marshal.SizeOf(osAdapterInfoData);
+            nint AdapterBuffer = Marshal.AllocCoTaskMem(osAdapterInfoDataSize);
+            try
+            {
+                Marshal.StructureToPtr(osAdapterInfoData, AdapterBuffer, false);
+                if (ADL2_Adapter_AdapterInfo_Get(_adlContextHandle, AdapterBuffer, osAdapterInfoDataSize) != Adl2.ADL_SUCCESS)
+                    return null;
+
+                osAdapterInfoData = (ADLAdapterInfoArray)Marshal.PtrToStructure(AdapterBuffer, osAdapterInfoData.GetType())!;
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(AdapterBuffer);
+            }
+
+            const int amdVendorId = 1002;
+
+            // Determine which GPU is internal discrete AMD GPU
+            ADLAdapterInfo internalDiscreteAdapter =
+                osAdapterInfoData.ADLAdapterInfo
+                    .FirstOrDefault(adapter =>
+                    {
+                        if (adapter.Exist == 0 || adapter.Present == 0)
+                            return false;
+
+                        if (adapter.VendorID != amdVendorId)
+                            return false;
+
+                        if (ADL2_Adapter_ASICFamilyType_Get(_adlContextHandle, adapter.AdapterIndex, out ADLAsicFamilyType asicFamilyType, out int asicFamilyTypeValids) != Adl2.ADL_SUCCESS)
+                            return false;
+
+                        asicFamilyType = (ADLAsicFamilyType)((int)asicFamilyType & asicFamilyTypeValids);
+
+                        return (asicFamilyType & type) != 0;
+                    });
+
+            if (internalDiscreteAdapter.Exist == 0)
+                return null;
+
+            return internalDiscreteAdapter;
         }
-        finally
+        catch (Exception ex)
         {
-            Marshal.FreeCoTaskMem(AdapterBuffer);
-        }
-
-        const int amdVendorId = 1002;
-
-        // Determine which GPU is internal discrete AMD GPU
-        ADLAdapterInfo internalDiscreteAdapter =
-            osAdapterInfoData.ADLAdapterInfo
-                .FirstOrDefault(adapter =>
-                {
-                    if (adapter.Exist == 0 || adapter.Present == 0)
-                        return false;
-
-                    if (adapter.VendorID != amdVendorId)
-                        return false;
-
-                    if (ADL2_Adapter_ASICFamilyType_Get(_adlContextHandle, adapter.AdapterIndex, out ADLAsicFamilyType asicFamilyType, out int asicFamilyTypeValids) != Adl2.ADL_SUCCESS)
-                        return false;
-
-                    asicFamilyType = (ADLAsicFamilyType)((int)asicFamilyType & asicFamilyTypeValids);
-
-                    return (asicFamilyType & type) != 0;
-                });
-
-        if (internalDiscreteAdapter.Exist == 0)
+            LogSensorFailure("AMD adapter query", ex);
             return null;
-
-        return internalDiscreteAdapter;
+        }
 
     }
 
-    public AmdGpuControl()
+    public AmdGpuControl(bool allowIntegratedOnly = false)
     {
-        if (AppConfig.NoGpu() || !Adl2.Load()) return;
+        if ((!allowIntegratedOnly && AppConfig.NoGpu()) || !Adl2.Load()) return;
 
         try
         {
@@ -96,48 +110,122 @@ public class AmdGpuControl : IGpuControl
 
     public int? GetCurrentTemperature()
     {
-        if (!IsValid)
-            return null;
+        try
+        {
+            if (!GetPMLog(out ADLPMLogDataOutput adlpmLogDataOutput))
+                return null;
 
-        if (!GetPMLog(out ADLPMLogDataOutput adlpmLogDataOutput))
+            return GetSensorValue(adlpmLogDataOutput, ADLSensorType.PMLOG_TEMPERATURE_EDGE);
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD dGPU temperature", ex);
             return null;
-
-        ADLSingleSensorData temperatureSensor = adlpmLogDataOutput.Sensors[(int)ADLSensorType.PMLOG_TEMPERATURE_EDGE];
-        if (temperatureSensor.Supported == 0)
-            return null;
-
-        return temperatureSensor.Value;
+        }
     }
 
 
     private ADLPMLogDataOutput _pmLog;
     private bool _pmLogValid;
     private long _pmLogTime = -PMLogCacheMs;
+    private ADLPMLogDataOutput _iGpuPmLog;
+    private bool _iGpuPmLogValid;
+    private long _iGpuPmLogTime = -PMLogCacheMs;
     private const int PMLogCacheMs = 500;
+
+    private void LogSensorFailure(string source, Exception ex)
+    {
+        lock (_sensorFailureLock)
+        {
+            if (_loggedSensorFailures.Add(source))
+                Logger.WriteLine(source + " read failed: " + ex.Message);
+        }
+    }
+
+    private bool GetPMLog(
+        ADLAdapterInfo adapter,
+        ref ADLPMLogDataOutput cache,
+        ref bool valid,
+        ref long lastRead,
+        string source,
+        out ADLPMLogDataOutput log)
+    {
+        if (_adlContextHandle == nint.Zero)
+        {
+            log = default;
+            return false;
+        }
+
+        if (Environment.TickCount64 - lastRead >= PMLogCacheMs)
+        {
+            try
+            {
+                valid = ADL2_New_QueryPMLogData_Get(_adlContextHandle, adapter.AdapterIndex, out cache) == Adl2.ADL_SUCCESS;
+            }
+            catch (Exception ex)
+            {
+                valid = false;
+                LogSensorFailure(source + " PMLog", ex);
+            }
+            lastRead = Environment.TickCount64;
+        }
+
+        log = cache;
+        return valid;
+    }
 
     private bool GetPMLog(out ADLPMLogDataOutput log)
     {
-        if (Environment.TickCount64 - _pmLogTime >= PMLogCacheMs)
+        if (!IsValid)
         {
-            _pmLogValid = ADL2_New_QueryPMLogData_Get(_adlContextHandle, _internalDiscreteAdapter.AdapterIndex, out _pmLog) == Adl2.ADL_SUCCESS;
-            _pmLogTime = Environment.TickCount64;
+            log = default;
+            return false;
         }
-        log = _pmLog;
-        return _pmLogValid;
+
+        return GetPMLog(_internalDiscreteAdapter, ref _pmLog, ref _pmLogValid, ref _pmLogTime, "AMD dGPU", out log);
+    }
+
+    private bool GetIntegratedPMLog(out ADLPMLogDataOutput log)
+    {
+        if (_iGPU is not { } adapter)
+        {
+            log = default;
+            return false;
+        }
+
+        return GetPMLog(adapter, ref _iGpuPmLog, ref _iGpuPmLogValid, ref _iGpuPmLogTime, "AMD iGPU", out log);
+    }
+
+    private static int? GetSensorValue(ADLPMLogDataOutput log, ADLSensorType sensorType, bool positiveOnly = false)
+    {
+        int index = (int)sensorType;
+        if (log.Sensors is null || index < 0 || index >= log.Sensors.Length)
+            return null;
+
+        ADLSingleSensorData sensor = log.Sensors[index];
+        if (sensor.Supported == 0)
+            return null;
+
+        if (positiveOnly && sensor.Value <= 0)
+            return null;
+
+        return sensor.Value;
     }
 
     public int? GetGpuUse()
     {
-        if (!IsValid) return null;
+        try
+        {
+            if (!GetPMLog(out ADLPMLogDataOutput adlpmLogDataOutput))
+                return null;
 
-        if (!GetPMLog(out ADLPMLogDataOutput adlpmLogDataOutput))
+            return GetSensorValue(adlpmLogDataOutput, ADLSensorType.PMLOG_INFO_ACTIVITY_GFX);
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD dGPU usage", ex);
             return null;
-
-        ADLSingleSensorData gpuUsage = adlpmLogDataOutput.Sensors[(int)ADLSensorType.PMLOG_INFO_ACTIVITY_GFX];
-        if (gpuUsage.Supported == 0)
-            return null;
-
-        return gpuUsage.Value;
+        }
 
     }
 
@@ -145,59 +233,129 @@ public class AmdGpuControl : IGpuControl
 
     public (long usedMb, long totalMb)? GetVramInfo()
     {
-        if (!IsValid) return null;
-
-        if (_totalVramMB <= 0)
+        try
         {
-            if (ADL2_Adapter_MemoryInfo2_Get(_adlContextHandle, _internalDiscreteAdapter.AdapterIndex, out ADLMemoryInfo2 mem) != Adl2.ADL_SUCCESS)
+            if (!IsValid) return null;
+
+            if (_totalVramMB <= 0)
+            {
+                if (ADL2_Adapter_MemoryInfo2_Get(_adlContextHandle, _internalDiscreteAdapter.AdapterIndex, out ADLMemoryInfo2 mem) != Adl2.ADL_SUCCESS)
+                    return null;
+                _totalVramMB = mem.iMemorySize / (1024 * 1024);
+                if (_totalVramMB <= 0) return null;
+            }
+
+            if (ADL2_Adapter_DedicatedVRAMUsage_Get(_adlContextHandle, _internalDiscreteAdapter.AdapterIndex, out int usedMB) != Adl2.ADL_SUCCESS)
                 return null;
-            _totalVramMB = mem.iMemorySize / (1024 * 1024);
-            if (_totalVramMB <= 0) return null;
+
+            return (usedMB, _totalVramMB);
         }
-
-        if (ADL2_Adapter_DedicatedVRAMUsage_Get(_adlContextHandle, _internalDiscreteAdapter.AdapterIndex, out int usedMB) != Adl2.ADL_SUCCESS)
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD dGPU VRAM", ex);
             return null;
-
-        return (usedMB, _totalVramMB);
+        }
     }
 
     public int? GetiGpuUse()
     {
-        if (_adlContextHandle == nint.Zero || _iGPU == null) return null;
-        if (ADL2_New_QueryPMLogData_Get(_adlContextHandle, ((ADLAdapterInfo)_iGPU).AdapterIndex, out ADLPMLogDataOutput adlpmLogDataOutput) != Adl2.ADL_SUCCESS) return null;
+        try
+        {
+            if (!GetIntegratedPMLog(out ADLPMLogDataOutput adlpmLogDataOutput)) return null;
 
-        ADLSingleSensorData gpuUsage = adlpmLogDataOutput.Sensors[(int)ADLSensorType.PMLOG_INFO_ACTIVITY_GFX];
-        if (gpuUsage.Supported == 0) return null;
+            return GetSensorValue(adlpmLogDataOutput, ADLSensorType.PMLOG_INFO_ACTIVITY_GFX);
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD iGPU usage", ex);
+            return null;
+        }
 
-        return gpuUsage.Value;
 
     }
 
     public float? GetGpuPower()
     {
-        if (!IsValid) return null;
-        if (!GetPMLog(out ADLPMLogDataOutput adlpmLogDataOutput)) return null;
-
-        foreach (var sensorType in new[] { ADLSensorType.PMLOG_ASIC_POWER, ADLSensorType.PMLOG_GFX_POWER, ADLSensorType.PMLOG_BOARD_POWER })
+        try
         {
-            ADLSingleSensorData sensor = adlpmLogDataOutput.Sensors[(int)sensorType];
-            if (sensor.Supported != 0 && sensor.Value > 0)
-                return sensor.Value;
+            if (!GetPMLog(out ADLPMLogDataOutput adlpmLogDataOutput)) return null;
+
+            foreach (var sensorType in new[] { ADLSensorType.PMLOG_ASIC_POWER, ADLSensorType.PMLOG_GFX_POWER, ADLSensorType.PMLOG_BOARD_POWER })
+            {
+                int? power = GetSensorValue(adlpmLogDataOutput, sensorType, true);
+                if (power is not null)
+                    return power.Value;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD dGPU power", ex);
         }
 
         return null;
     }
 
+    public int? GetGpuClock()
+    {
+        try
+        {
+            if (!GetPMLog(out ADLPMLogDataOutput adlpmLogDataOutput)) return null;
+
+            return GetSensorValue(adlpmLogDataOutput, ADLSensorType.PMLOG_CLK_GFXCLK, true);
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD dGPU clock", ex);
+            return null;
+        }
+    }
+
+    public int? GetIntegratedTemperature()
+    {
+        try
+        {
+            if (!GetIntegratedPMLog(out ADLPMLogDataOutput adlpmLogDataOutput)) return null;
+
+            return GetSensorValue(adlpmLogDataOutput, ADLSensorType.PMLOG_TEMPERATURE_EDGE);
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD iGPU temperature", ex);
+            return null;
+        }
+    }
+
+    public int? GetIntegratedGpuClock()
+    {
+        try
+        {
+            if (!GetIntegratedPMLog(out ADLPMLogDataOutput adlpmLogDataOutput)) return null;
+
+            return GetSensorValue(adlpmLogDataOutput, ADLSensorType.PMLOG_CLK_GFXCLK, true);
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD iGPU clock", ex);
+            return null;
+        }
+    }
+
     // Used by ROG Ally (iGPU-only) for auto-TDP logic - queries the integrated GPU adapter
     public int GetiGpuPower()
     {
-        if (_adlContextHandle == nint.Zero || _iGPU == null) return 0;
-        if (ADL2_New_QueryPMLogData_Get(_adlContextHandle, ((ADLAdapterInfo)_iGPU).AdapterIndex, out ADLPMLogDataOutput adlpmLogDataOutput) != Adl2.ADL_SUCCESS) return 0;
+        try
+        {
+            if (!GetIntegratedPMLog(out ADLPMLogDataOutput adlpmLogDataOutput)) return 0;
 
-        ADLSingleSensorData gpuUsage = adlpmLogDataOutput.Sensors[(int)ADLSensorType.PMLOG_ASIC_POWER];
-        if (gpuUsage.Supported == 0) return 0;
+            int? power = GetSensorValue(adlpmLogDataOutput, ADLSensorType.PMLOG_ASIC_POWER);
+            return power ?? 0;
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("AMD iGPU power", ex);
+            return 0;
+        }
 
-        return gpuUsage.Value;
     }
 
 

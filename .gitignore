@@ -369,3 +369,4 @@ FodyWeavers.xsd
 tools/
 app/*.lscache
 publish_new2/
+.buildobj/

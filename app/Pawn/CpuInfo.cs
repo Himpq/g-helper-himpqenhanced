@@ -7,6 +7,7 @@ namespace PawnIO
     public static class CpuInfo
     {
         public static readonly bool IsAMD = DetectAMD();
+        public static readonly bool IsIntel = DetectIntel();
 
         private static bool DetectAMD()
         {
@@ -15,6 +16,15 @@ namespace PawnIO
 
             Span<uint> regs = stackalloc uint[] { (uint)ebx, (uint)edx, (uint)ecx };
             return MemoryMarshal.Cast<uint, byte>(regs).SequenceEqual("AuthenticAMD"u8);
+        }
+
+        private static bool DetectIntel()
+        {
+            if (!X86Base.IsSupported) return false;
+            var (_, ebx, ecx, edx) = X86Base.CpuId(0, 0);
+
+            Span<uint> regs = stackalloc uint[] { (uint)ebx, (uint)edx, (uint)ecx };
+            return MemoryMarshal.Cast<uint, byte>(regs).SequenceEqual("GenuineIntel"u8);
         }
 
 

@@ -33,12 +33,23 @@ namespace HimpqEnhanced
             ("GPU_TEMP", "GPU 温度", "GPU", "°C", 0),
             ("CPU_USAGE", "CPU 使用率", "CPU", "%", 0),
             ("GPU_USAGE", "GPU 使用率", "GPU", "%", 0),
+            ("CPU_FREQ", "CPU 频率", "CPU", "MHz", 0),
+            ("GPU_FREQ", "GPU 频率", "GPU", "MHz", 0),
             ("RAM_USAGE", "内存使用率", "RAM", "%", 1),
+            ("RAM_USED", "内存占用", "RAM", "MB", 1),
+            ("VRAM_USAGE", "显存使用率", "VRAM", "%", 1),
+            ("VRAM_USED", "显存占用", "VRAM", "MB", 1),
             ("CPU_POWER", "CPU 功耗", "CPU", "W", 1),
             ("GPU_POWER", "GPU 功耗", "GPU", "W", 1),
+            ("TOTAL_POWER", "功率消耗", "PWR", "W", 1),
             ("BATTERY_POWER", "电池功耗", "PWR", "W", 1),
+            ("BATTERY_LEVEL", "电量", "BAT", "%", 1),
+            ("BATTERY_HEALTH", "电池健康", "HLT", "%", 1),
+            ("POWER_SOURCE", "供电来源", "SRC", "", 1),
+            ("MODE", "性能模式", "MODE", "", 1),
             ("FAN_CPU", "CPU 风扇", "FAN", "rpm", 1),
             ("FAN_GPU", "GPU 风扇", "GPU", "rpm", 1),
+            ("FAN_MID", "中置风扇", "MID", "rpm", 1),
         };
 
         public TaskbarItemEditor(List<TaskbarItemConfig> items)
@@ -425,9 +436,11 @@ namespace HimpqEnhanced
             var maxMap = new Dictionary<string, string>
             {
                 ["CPU_TEMP"] = "100", ["GPU_TEMP"] = "100",
-                ["CPU_USAGE"] = "100", ["GPU_USAGE"] = "100", ["RAM_USAGE"] = "100",
-                ["CPU_POWER"] = "100.0", ["GPU_POWER"] = "100.0", ["BATTERY_POWER"] = "100.0",
-                ["FAN_CPU"] = "10000", ["FAN_GPU"] = "10000",
+                ["CPU_USAGE"] = "100", ["GPU_USAGE"] = "100", ["CPU_FREQ"] = "9999", ["GPU_FREQ"] = "9999", ["RAM_USAGE"] = "100",
+                ["RAM_USED"] = "99999", ["VRAM_USAGE"] = "100", ["VRAM_USED"] = "99999",
+                ["CPU_POWER"] = "100.0", ["GPU_POWER"] = "100.0", ["TOTAL_POWER"] = "100.0", ["BATTERY_POWER"] = "100.0",
+                ["BATTERY_LEVEL"] = "100.0", ["BATTERY_HEALTH"] = "100.0", ["POWER_SOURCE"] = "USB-C", ["MODE"] = "增强 (Turbo)",
+                ["FAN_CPU"] = "10000", ["FAN_GPU"] = "10000", ["FAN_MID"] = "10000",
             };
             return maxMap.TryGetValue(item.token, out var max) ? $"{max}{item.suffix}" : $"?{item.suffix}";
         }

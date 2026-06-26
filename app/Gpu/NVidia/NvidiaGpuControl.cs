@@ -52,6 +52,8 @@ public class NvidiaGpuControl : IGpuControl
     public int _lastTempTime = 0;
 
     private static bool verboseLog = false;
+    private readonly object _sensorFailureLock = new();
+    private readonly HashSet<string> _loggedSensorFailures = new();
 
     private enum GpuState { Active, Asleep, Off }
 
@@ -78,46 +80,84 @@ public class NvidiaGpuControl : IGpuControl
         return _lastState;
     }
 
+    private void LogSensorFailure(string source, Exception ex)
+    {
+        lock (_sensorFailureLock)
+        {
+            if (_loggedSensorFailures.Add(source))
+                Logger.WriteLine(source + " read failed: " + ex.Message);
+        }
+    }
+
+    public bool IsGpuActive()
+    {
+        try
+        {
+            return IsValid && GetGpuState() == GpuState.Active;
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("NVIDIA GPU state", ex);
+            return false;
+        }
+    }
+
     public int? ReadCurrentTemperature(bool log = false)
     {
-        if (!IsValid) return null;
+        try
+        {
+            if (!IsValid) return null;
 
-        var thermalSettings = GPUApi.GetThermalSettings(_internalGpu!.Handle);
-        if (thermalSettings.Sensors is null) return null;
+            var thermalSettings = GPUApi.GetThermalSettings(_internalGpu!.Handle);
+            if (thermalSettings.Sensors is null) return null;
 
-        IThermalSensor? gpuSensor = thermalSettings.Sensors
-            .FirstOrDefault(s => s.Target == ThermalSettingsTarget.GPU);
+            IThermalSensor? gpuSensor = thermalSettings.Sensors
+                .FirstOrDefault(s => s.Target == ThermalSettingsTarget.GPU);
 
-        if (log || verboseLog) Logger.WriteLine($"GPU Temp: {gpuSensor?.CurrentTemperature}C");
-        return gpuSensor?.CurrentTemperature;
+            if (log || verboseLog) Logger.WriteLine($"GPU Temp: {gpuSensor?.CurrentTemperature}C");
+            return gpuSensor?.CurrentTemperature;
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("NVIDIA GPU temperature", ex);
+            return null;
+        }
     }
 
     private Task<int?>? _readTask;
 
     public int? GetCurrentTemperature()
     {
-        if (!IsValid) return null;
-
-        var state = GetGpuState();
-        if (state == GpuState.Off) return null;
-
-        if ((_readTask?.IsCompleted ?? true) && (state == GpuState.Active || ShouldRefresh()))
+        try
         {
-            _readTask = Task.Run(() =>
+            if (!IsValid) return null;
+
+            var state = GetGpuState();
+            if (state == GpuState.Off) return null;
+
+            if ((_readTask?.IsCompleted ?? true) && (state == GpuState.Active || ShouldRefresh()))
             {
-                var temp = ReadCurrentTemperature();
-                if (temp is not null)
+                _readTask = Task.Run(() =>
                 {
-                    _lastTemp = temp;
-                    _lastTempTime = Environment.TickCount;
-                }
-                return temp;
-            });
+                    var temp = ReadCurrentTemperature();
+                    if (temp is not null)
+                    {
+                        _lastTemp = temp;
+                        _lastTempTime = Environment.TickCount;
+                    }
+                    return temp;
+                });
+            }
+
+            _readTask?.Wait(500);
+
+            return _lastTemp;
         }
-
-        _readTask?.Wait(500);
-
-        return _lastTemp;
+        catch (Exception ex)
+        {
+            LogSensorFailure("NVIDIA GPU temperature task", ex);
+            return null;
+        }
     }
 
     private bool ShouldRefresh()
@@ -129,7 +169,9 @@ public class NvidiaGpuControl : IGpuControl
 
         if (_lastTemp is null) return true;
 
-        var cpuTemp = (float)HardwareControl.GetCPUTemp();
+        if (HardwareControl.GetCPUTemp() is not { } cpuTemp)
+            return false;
+
         var delta = _lastTemp.Value - cpuTemp;
 
         if (delta < deltaMin) return false;
@@ -354,35 +396,80 @@ public class NvidiaGpuControl : IGpuControl
 
     public int? GetGpuUse()
     {
-        if (!IsValid) return null;
-         if (GetGpuState() != GpuState.Active) return null;
+        try
+        {
+            if (!IsValid) return null;
+            if (GetGpuState() != GpuState.Active) return null;
 
-        PhysicalGPU internalGpu = _internalGpu!;
-        IUtilizationDomainInfo? gpuUsage = GPUApi.GetUsages(internalGpu.Handle).GPU;
+            PhysicalGPU internalGpu = _internalGpu!;
+            IUtilizationDomainInfo? gpuUsage = GPUApi.GetUsages(internalGpu.Handle).GPU;
 
-        return (int?)gpuUsage?.Percentage;
+            return (int?)gpuUsage?.Percentage;
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("NVIDIA GPU usage", ex);
+            return null;
+        }
 
     }
 
 
     public float? GetGpuPower()
     {
-        if (!IsValid) return null;
-        var state = GetGpuState();
-        if (state == GpuState.Off)
+        try
         {
-            NvmlHelper.Shutdown();
+            if (!IsValid) return null;
+            var state = GetGpuState();
+            if (state == GpuState.Off)
+            {
+                NvmlHelper.Shutdown();
+                return null;
+            }
+            if (state != GpuState.Active) return 0f;
+            return NvmlHelper.GetGpuPower() ?? 0f;
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("NVIDIA GPU power", ex);
             return null;
         }
-        if (state != GpuState.Active) return 0f;
-        return NvmlHelper.GetGpuPower() ?? 0f;
+    }
+
+    public int? GetGpuClock()
+    {
+        try
+        {
+            if (!IsValid) return null;
+            var state = GetGpuState();
+            if (state == GpuState.Off)
+            {
+                NvmlHelper.Shutdown();
+                return null;
+            }
+            if (state != GpuState.Active) return null;
+            return NvmlHelper.GetGpuClock();
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("NVIDIA GPU clock", ex);
+            return null;
+        }
     }
 
     public (long usedMb, long totalMb)? GetVramInfo()
     {
-        if (!IsValid) return null;
-        if (GetGpuState() != GpuState.Active) return null;
-        return NvmlHelper.GetMemoryInfo();
+        try
+        {
+            if (!IsValid) return null;
+            if (GetGpuState() != GpuState.Active) return null;
+            return NvmlHelper.GetMemoryInfo();
+        }
+        catch (Exception ex)
+        {
+            LogSensorFailure("NVIDIA GPU VRAM", ex);
+            return null;
+        }
     }
 
 }

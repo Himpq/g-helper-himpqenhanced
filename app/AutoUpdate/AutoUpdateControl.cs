@@ -11,7 +11,10 @@ namespace GHelper.AutoUpdate
     public class AutoUpdateControl
     {
         private const string ReleaseRepository = "Himpq/g-helper-himpqenhanced";
-        private const string VersionSuffix = "-he";
+        private const string VersionSuffix = "-0he";
+        private static readonly Regex HimpqEnhancedVersionRegex = new(
+            @"^v?(?<main>\d+\.\d+\.\d+(?:\.\d+)?)-(?<he>\d+)he$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
         private static readonly string ReleasesUrl = $"https://github.com/{ReleaseRepository}/releases";
         private static readonly string LatestReleaseApiUrl = $"https://api.github.com/repos/{ReleaseRepository}/releases/latest";
 
@@ -82,6 +85,19 @@ namespace GHelper.AutoUpdate
                     var config = JsonSerializer.Deserialize<JsonElement>(json);
                     var tag = config.GetProperty("tag_name").ToString();
                     var releaseDisplayVersion = NormalizeDisplayVersion(tag);
+                    var localDisplayVersion = GetDisplayVersion();
+                    if (!TryGetComparableVersion(tag, out var gitVersion))
+                    {
+                        Logger.WriteLine($"Ignore unsupported {ReleaseRepository} release version: {tag}");
+                        return;
+                    }
+
+                    if (!TryGetComparableVersion(localDisplayVersion, out var appVersion))
+                    {
+                        Logger.WriteLine($"Ignore update check because local version does not use HimpqEnhanced version format: {localDisplayVersion}");
+                        return;
+                    }
+
                     var assets = config.GetProperty("assets");
 
                     string? url = null;
@@ -98,14 +114,11 @@ namespace GHelper.AutoUpdate
                         return;
                     }
 
-                    var gitVersion = GetComparableVersion(tag);
-                    var appVersion = GetComparableVersion(GetDisplayVersion());
-
                     if (gitVersion.CompareTo(appVersion) > 0)
                     {
                         versionUrl = url;
                         update = true;
-                        settings.SetVersionLabel(Properties.Strings.DownloadUpdate + $": {GetDisplayVersion()} → {releaseDisplayVersion}", true);
+                        settings.SetVersionLabel(Properties.Strings.DownloadUpdate + $": {localDisplayVersion} → {releaseDisplayVersion}", true);
 
                         string[] args = Environment.GetCommandLineArgs();
                         if (force || args.Length > 1 && args[1] == "autoupdate")
@@ -132,7 +145,7 @@ namespace GHelper.AutoUpdate
                     }
                     else
                     {
-                        Logger.WriteLine($"Latest version {GetDisplayVersion()}");
+                        Logger.WriteLine($"Latest version {localDisplayVersion}");
                     }
 
                 }
@@ -165,21 +178,37 @@ namespace GHelper.AutoUpdate
             return normalized;
         }
 
-        private static Version GetComparableVersion(string versionText)
+        private readonly record struct HimpqEnhancedVersion(Version MainVersion, int EnhancedVersion) : IComparable<HimpqEnhancedVersion>
         {
+            public int CompareTo(HimpqEnhancedVersion other)
+            {
+                int mainCompare = MainVersion.CompareTo(other.MainVersion);
+                return mainCompare != 0 ? mainCompare : EnhancedVersion.CompareTo(other.EnhancedVersion);
+            }
+        }
+
+        private static bool TryGetComparableVersion(string versionText, out HimpqEnhancedVersion version)
+        {
+            version = default;
             string normalized = NormalizeDisplayVersion(versionText);
-            int suffixIndex = normalized.IndexOf('-', StringComparison.Ordinal);
-            if (suffixIndex >= 0)
-                normalized = normalized[..suffixIndex];
+            var match = HimpqEnhancedVersionRegex.Match(normalized);
+            if (!match.Success)
+                return false;
 
-            if (!Version.TryParse(normalized, out var version))
-                throw new InvalidOperationException($"Invalid release version: {versionText}");
+            if (!Version.TryParse(match.Groups["main"].Value, out var mainVersion))
+                return false;
 
-            return new Version(
-                version.Major,
-                version.Minor,
-                Math.Max(version.Build, 0),
-                Math.Max(version.Revision, 0));
+            if (!int.TryParse(match.Groups["he"].Value, out int enhancedVersion))
+                return false;
+
+            version = new HimpqEnhancedVersion(
+                new Version(
+                    mainVersion.Major,
+                    mainVersion.Minor,
+                    Math.Max(mainVersion.Build, 0),
+                    Math.Max(mainVersion.Revision, 0)),
+                enhancedVersion);
+            return true;
         }
 
         public static string EscapeString(string input)

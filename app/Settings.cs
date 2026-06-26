@@ -819,6 +819,7 @@ namespace GHelper
             {
                 Logger.WriteLine("Taskbar created, re-creating tray icon");
                 if (Program.trayIcon is not null) Program.trayIcon.Visible = true;
+                HimpqEnhanced.Main.RestartTaskbarWindowAfterShellRecreated();
             }
 
             try
@@ -1563,6 +1564,7 @@ namespace GHelper
             if (matrixForm != null && matrixForm.Text != "") matrixForm.Close();
             if (handheldForm != null && handheldForm.Text != "") handheldForm.Close();
             if (mouseSettings != null && mouseSettings.Text != "") mouseSettings.Close();
+            if (himpqSettings is not null && !himpqSettings.IsDisposed && himpqSettings.Text != "") himpqSettings.Close();
             MemoryHelper.TrimAfter();
         }
 
@@ -1587,6 +1589,7 @@ namespace GHelper
                    (updatesForm != null && updatesForm.ContainsFocus) ||
                    (matrixForm != null && matrixForm.ContainsFocus) ||
                    (handheldForm != null && handheldForm.ContainsFocus) ||
+                   (himpqSettings is not null && !himpqSettings.IsDisposed && himpqSettings.ContainsFocus) ||
                    this.ContainsFocus ||
                    (lostFocusCheck && Math.Abs(DateTimeOffset.Now.ToUnixTimeMilliseconds() - lastLostFocus) < 300);
         }

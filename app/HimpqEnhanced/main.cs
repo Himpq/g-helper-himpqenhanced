@@ -120,6 +120,15 @@ namespace HimpqEnhanced
                 StartTaskbarWindow();
         }
 
+        public static void RestartTaskbarWindowAfterShellRecreated()
+        {
+            var config = HimpqConfig.Load();
+            if (config.taskbar_window_enabled != 1) return;
+
+            Logger.WriteLine("Himpq taskbar window: shell taskbar recreated, restarting monitor window");
+            RestartTaskbarWindow();
+        }
+
         public static void UpdateTaskbarFont(string fontName, float fontSize)
         {
             _taskbarWindow?.UpdateFont(fontName, fontSize);
