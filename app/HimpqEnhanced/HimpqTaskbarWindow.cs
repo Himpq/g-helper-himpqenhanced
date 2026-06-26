@@ -1,8 +1,9 @@
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
+using System.Text;
 using GHelper;
+using GHelper.Mode;
 using GHelper.UI;
 
 namespace HimpqEnhanced
@@ -12,16 +13,31 @@ namespace HimpqEnhanced
         #region Win32
 
         private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const int WS_EX_TOPMOST = 0x00000008;
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TRANSPARENT = 0x00000020;
         private const int GWL_EXSTYLE = -20;
         private const uint SWP_NOSIZE = 0x0001;
         private const uint SWP_NOMOVE = 0x0002;
         private const uint SWP_NOZORDER = 0x0004;
+        private const uint SWP_NOOWNERZORDER = 0x0200;
         private const uint SWP_NOACTIVATE = 0x0010;
         private const int SW_SHOWNOACTIVATE = 4;
+        private const int WM_NCHITTEST = 0x0084;
+        private const int WM_WINDOWPOSCHANGING = 0x0046;
+        private const int WM_WINDOWPOSCHANGED = 0x0047;
+        private const int WM_SHOWWINDOW = 0x0018;
+        private const int WM_ACTIVATE = 0x0006;
+        private const int WM_MOUSEACTIVATE = 0x0021;
+        private const int WM_NCACTIVATE = 0x0086;
+        private const int HTTRANSPARENT = -1;
+        private const int MA_NOACTIVATE = 3;
+        private const uint GW_HWNDPREV = 3;
+        private const int DWMWA_CLOAKED = 14;
+        private const int TopMostKeeperIntervalMs = 250;
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+        private static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
@@ -48,10 +64,49 @@ namespace HimpqEnhanced
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowTextLength(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WINDOWPOS
+        {
+            public IntPtr hwnd;
+            public IntPtr hwndInsertAfter;
+            public int x;
+            public int y;
+            public int cx;
+            public int cy;
+            public uint flags;
+        }
+
 
         #endregion
 
@@ -61,12 +116,23 @@ namespace HimpqEnhanced
             ["{GPU_TEMP}"] = "100",
             ["{CPU_USAGE}"] = "100",
             ["{GPU_USAGE}"] = "100",
+            ["{CPU_FREQ}"] = "9999",
+            ["{GPU_FREQ}"] = "9999",
             ["{RAM_USAGE}"] = "100",
+            ["{RAM_USED}"] = "99999",
+            ["{VRAM_USAGE}"] = "100",
+            ["{VRAM_USED}"] = "99999",
             ["{CPU_POWER}"] = "100.0",
             ["{GPU_POWER}"] = "100.0",
+            ["{TOTAL_POWER}"] = "100.0",
             ["{BATTERY_POWER}"] = "100.0",
+            ["{BATTERY_LEVEL}"] = "100.0",
+            ["{BATTERY_HEALTH}"] = "100.0",
+            ["{POWER_SOURCE}"] = "USB-C",
+            ["{MODE}"] = "增强 (Turbo)",
             ["{FAN_CPU}"] = "10000",
             ["{FAN_GPU}"] = "10000",
+            ["{FAN_MID}"] = "10000",
         };
 
         private const int MaxVisibleRows = 2;
@@ -97,7 +163,9 @@ namespace HimpqEnhanced
         private int _interItemGap;
         private int _rowGap;
         private bool _readPower;
-        private bool _readBatteryPower;
+        private bool _readBatteryState;
+        private bool _readBatteryHealth;
+        private long _lastBatteryHealthRead;
 
         private SolidBrush _labelBrush;
         private SolidBrush _valueBrush;
@@ -110,7 +178,8 @@ namespace HimpqEnhanced
         private int _padding;
         private bool _darkTheme;
         private bool _textShadowEnabled;
-
+        private System.Windows.Forms.Timer? _topMostKeeperTimer;
+        private long _lastTopMostKeeperLog;
         public bool IsFloatingMode { get; }
 
         public HimpqTaskbarWindow()
@@ -120,7 +189,7 @@ namespace HimpqEnhanced
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
-            TopMost = !IsFloatingMode || config.taskbar_floating_topmost == 1;
+            TopMost = !IsFloatingMode;
             BackColor = Color.Black;
             TransparencyKey = Color.Black;
             MinimizeBox = false;
@@ -153,6 +222,8 @@ namespace HimpqEnhanced
             _isWin11 = Environment.OSVersion.Version.Build >= 22000;
         }
 
+        protected override bool ShowWithoutActivation => true;
+
         protected override CreateParams CreateParams
         {
             get
@@ -160,6 +231,8 @@ namespace HimpqEnhanced
                 var cp = base.CreateParams;
                 cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
                 var config = HimpqConfig.Load();
+                if (IsFloatingMode && config.taskbar_floating_topmost == 1)
+                    cp.ExStyle |= WS_EX_TOPMOST;
                 if (!IsFloatingMode || config.taskbar_floating_click_through == 1)
                     cp.ExStyle |= WS_EX_TRANSPARENT;
                 return cp;
@@ -196,7 +269,7 @@ namespace HimpqEnhanced
         {
             if (IsFloatingMode || _embedded || !IsHandleCreated) return;
 
-            _hTaskbar = FindWindow("Shell_TrayWnd", null);
+            _hTaskbar = GetTaskbarHandle();
             if (_hTaskbar == IntPtr.Zero) return;
 
             IntPtr parent;
@@ -229,12 +302,20 @@ namespace HimpqEnhanced
                 {
                     EmbedIntoTaskbar();
                 }
-                ApplyWindowOptions(HimpqConfig.Load());
-                ShowWindow(Handle, SW_SHOWNOACTIVATE);
+                var config = HimpqConfig.Load();
+                ApplyWindowOptions(config);
                 if (_updateTimer is not null && !_updateTimer.Enabled)
                     _updateTimer.Start();
                 _layoutDirty = true;
                 UpdateData();
+                ShowNoActivate();
+                if (IsFloatingMode)
+                {
+                    if (config.taskbar_floating_topmost == 1)
+                        ForceFloatingTopMost(config);
+                    ConfigureTopMostKeeper(config);
+                }
+                LogFloatingWindowState("show");
             });
         }
 
@@ -244,6 +325,7 @@ namespace HimpqEnhanced
             {
                 base.Hide();
                 _updateTimer?.Stop();
+                _topMostKeeperTimer?.Stop();
                 ClearSensorFlags();
             });
         }
@@ -276,6 +358,101 @@ namespace HimpqEnhanced
 
         private int DpiScale(int value) => (int)Math.Round(value * _dpi / 96.0);
 
+        private IntPtr GetTaskbarHandle()
+        {
+            if (_hTaskbar == IntPtr.Zero || !IsWindow(_hTaskbar))
+            {
+                _hTaskbar = FindWindow("Shell_TrayWnd", null);
+                _hNotify = IntPtr.Zero;
+            }
+
+            return _hTaskbar;
+        }
+
+        private void ShowNoActivate()
+        {
+            if (!Visible)
+                base.Show();
+
+            ShowWindow(Handle, SW_SHOWNOACTIVATE);
+        }
+
+        private void ForceFloatingTopMost(HimpqConfigData config)
+        {
+            if (!IsFloatingMode || config.taskbar_floating_topmost != 1 || !IsHandleCreated) return;
+
+            EnsureFloatingExtendedStyles(config);
+            uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+            SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, flags);
+        }
+
+        private void ConfigureTopMostKeeper(HimpqConfigData config)
+        {
+            if (!IsFloatingMode ||
+                !IsHandleCreated ||
+                config.taskbar_window_enabled != 1 ||
+                config.taskbar_window_floating_enabled != 1 ||
+                config.taskbar_floating_topmost != 1)
+            {
+                _topMostKeeperTimer?.Stop();
+                return;
+            }
+
+            _topMostKeeperTimer ??= CreateTopMostKeeperTimer();
+            if (!_topMostKeeperTimer.Enabled)
+                _topMostKeeperTimer.Start();
+        }
+
+        private System.Windows.Forms.Timer CreateTopMostKeeperTimer()
+        {
+            var timer = new System.Windows.Forms.Timer { Interval = TopMostKeeperIntervalMs };
+            timer.Tick += (_, _) => KeepFloatingTopMost();
+            return timer;
+        }
+
+        private void KeepFloatingTopMost()
+        {
+            if (!IsFloatingMode || IsDisposed || !IsHandleCreated)
+            {
+                _topMostKeeperTimer?.Stop();
+                return;
+            }
+
+            var config = HimpqConfig.Load();
+            if (config.taskbar_window_enabled != 1 ||
+                config.taskbar_window_floating_enabled != 1 ||
+                config.taskbar_floating_topmost != 1)
+            {
+                _topMostKeeperTimer?.Stop();
+                return;
+            }
+
+            if (!IsWindowVisible(Handle))
+            {
+                LogFloatingWindowState("keeper stopped hidden");
+                _topMostKeeperTimer?.Stop();
+                return;
+            }
+
+            IntPtr windowAbove = GetWindow(Handle, GW_HWNDPREV);
+
+            ForceFloatingTopMost(config);
+            if (windowAbove != IntPtr.Zero)
+                LogTopMostKeeperReassert(windowAbove);
+        }
+
+        private void LogTopMostKeeperReassert(IntPtr windowAbove)
+        {
+            var config = HimpqConfig.Load();
+            if (config.debug_mode != 1) return;
+
+            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            if (Math.Abs(now - _lastTopMostKeeperLog) < 5000) return;
+
+            _lastTopMostKeeperLog = now;
+            Logger.WriteLine("Himpq floating window: topmost keeper reassert above=0x" + windowAbove.ToInt64().ToString("X"));
+        }
+
         private void OnUpdateTick(object? sender, EventArgs e)
         {
             try { UpdateData(); } catch { }
@@ -300,12 +477,25 @@ namespace HimpqEnhanced
                 ApplyPosition(config);
             }
 
-            if (_readBatteryPower)
+            if (_readBatteryState)
                 HardwareControl.ReadBatteryState();
+
+            if (_readBatteryHealth)
+                RefreshBatteryHealth();
 
             HardwareControl.ReadSensorsOverlay();
 
             if (UpdateValues()) Invalidate();
+        }
+
+        private void RefreshBatteryHealth()
+        {
+            long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            int interval = HardwareControl.batteryHealth >= 0 ? 600000 : 60000;
+            if (Math.Abs(now - _lastBatteryHealthRead) < interval) return;
+
+            _lastBatteryHealthRead = now;
+            HardwareControl.RefreshBatteryHealth();
         }
 
         private void BuildLayout(HimpqConfigData config)
@@ -395,21 +585,25 @@ namespace HimpqEnhanced
 
         private void ApplySensorFlags(List<TaskbarItemConfig> items)
         {
-            bool readFans = items.Any(i => i.token is "FAN_CPU" or "FAN_GPU");
+            bool readFans = items.Any(i => i.token is "FAN_CPU" or "FAN_GPU" or "FAN_MID");
             bool readUsage = items.Any(i => i.token is "CPU_USAGE" or "GPU_USAGE");
-            bool readMemory = items.Any(i => i.token == "RAM_USAGE");
-            bool readPower = items.Any(i => i.token is "CPU_POWER" or "GPU_POWER");
+            bool readMemory = items.Any(i => i.token is "RAM_USAGE" or "RAM_USED" or "VRAM_USAGE" or "VRAM_USED");
+            bool readPower = items.Any(i => i.token is "CPU_POWER" or "GPU_POWER" or "TOTAL_POWER");
+            bool readFrequency = items.Any(i => i.token is "CPU_FREQ" or "GPU_FREQ");
+            bool readBatteryState = items.Any(i => i.token is "BATTERY_POWER" or "BATTERY_LEVEL" or "BATTERY_HEALTH");
 
             HardwareControl.taskbarReadFans = readFans;
             HardwareControl.taskbarReadUsage = readUsage;
             HardwareControl.taskbarReadMemory = readMemory;
             HardwareControl.taskbarReadPower = readPower;
+            HardwareControl.taskbarReadFrequency = readFrequency;
 
             if (readPower && !_readPower)
                 HardwareControl.ResetCPUPowerCounter();
 
             _readPower = readPower;
-            _readBatteryPower = items.Any(i => i.token == "BATTERY_POWER");
+            _readBatteryState = readBatteryState;
+            _readBatteryHealth = items.Any(i => i.token == "BATTERY_HEALTH");
         }
 
         private void ClearSensorFlags()
@@ -418,8 +612,10 @@ namespace HimpqEnhanced
             HardwareControl.taskbarReadUsage = false;
             HardwareControl.taskbarReadMemory = false;
             HardwareControl.taskbarReadPower = false;
+            HardwareControl.taskbarReadFrequency = false;
             _readPower = false;
-            _readBatteryPower = false;
+            _readBatteryState = false;
+            _readBatteryHealth = false;
         }
 
         private void ApplyPosition(HimpqConfigData config)
@@ -481,12 +677,12 @@ namespace HimpqEnhanced
             }
 
             IntPtr zOrder = config.taskbar_floating_topmost == 1 ? HWND_TOPMOST : HWND_NOTOPMOST;
-            SetWindowPos(Handle, zOrder, x, y, targetW, targetH, SWP_NOACTIVATE);
+            SetWindowPos(Handle, zOrder, x, y, targetW, targetH, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
 
         private Point CalculateDefaultFloatingPosition(HimpqConfigData config, int targetW, int targetH)
         {
-            IntPtr taskbar = _hTaskbar != IntPtr.Zero ? _hTaskbar : FindWindow("Shell_TrayWnd", null);
+            IntPtr taskbar = GetTaskbarHandle();
             if (taskbar == IntPtr.Zero || !GetWindowRect(taskbar, out RECT tr))
             {
                 Logger.WriteLine("Himpq floating window: taskbar handle not found for initial position");
@@ -526,22 +722,169 @@ namespace HimpqEnhanced
             if (!IsHandleCreated) return;
 
             bool topMost = !IsFloatingMode || config.taskbar_floating_topmost == 1;
-            TopMost = topMost;
-
-            bool clickThrough = !IsFloatingMode || config.taskbar_floating_click_through == 1;
-            int exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
-            int targetStyle = clickThrough
-                ? exStyle | WS_EX_TRANSPARENT
-                : exStyle & ~WS_EX_TRANSPARENT;
-
-            if (targetStyle != exStyle)
-                SetWindowLong(Handle, GWL_EXSTYLE, targetStyle);
+            if (IsFloatingMode)
+                EnsureFloatingExtendedStyles(config);
+            else
+                TopMost = topMost;
 
             if (IsFloatingMode)
             {
                 IntPtr zOrder = topMost ? HWND_TOPMOST : HWND_NOTOPMOST;
-                SetWindowPos(Handle, zOrder, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                SetWindowPos(Handle, zOrder, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                ConfigureTopMostKeeper(config);
             }
+        }
+
+        private void EnsureFloatingExtendedStyles(HimpqConfigData config)
+        {
+            if (!IsFloatingMode || !IsHandleCreated) return;
+
+            bool clickThrough = config.taskbar_floating_click_through == 1;
+            bool topMost = config.taskbar_floating_topmost == 1;
+            int exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
+            int targetStyle = exStyle | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+
+            if (topMost)
+                targetStyle |= WS_EX_TOPMOST;
+            else
+                targetStyle &= ~WS_EX_TOPMOST;
+
+            if (clickThrough)
+                targetStyle |= WS_EX_TRANSPARENT;
+            else
+                targetStyle &= ~WS_EX_TRANSPARENT;
+
+            if (targetStyle != exStyle)
+                SetWindowLong(Handle, GWL_EXSTYLE, targetStyle);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_WINDOWPOSCHANGING && IsFloatingTopMostLocked())
+            {
+                var pos = Marshal.PtrToStructure<WINDOWPOS>(m.LParam);
+                if ((pos.flags & SWP_NOZORDER) == 0 && pos.hwndInsertAfter != HWND_TOPMOST)
+                {
+                    LogWindowPosChange("changing", pos.hwndInsertAfter, pos.flags);
+                    pos.hwndInsertAfter = HWND_TOPMOST;
+                    Marshal.StructureToPtr(pos, m.LParam, false);
+                }
+            }
+
+            if (m.Msg == WM_NCHITTEST && IsFloatingClickThroughEnabled())
+            {
+                m.Result = new IntPtr(HTTRANSPARENT);
+                return;
+            }
+
+            if (m.Msg == WM_MOUSEACTIVATE && IsFloatingMode)
+            {
+                m.Result = new IntPtr(MA_NOACTIVATE);
+                return;
+            }
+
+            if (m.Msg == WM_WINDOWPOSCHANGED && IsFloatingTopMostLocked())
+            {
+                var pos = Marshal.PtrToStructure<WINDOWPOS>(m.LParam);
+                LogWindowPosChange("changed", pos.hwndInsertAfter, pos.flags);
+            }
+
+            if (m.Msg == WM_SHOWWINDOW && IsFloatingTopMostLocked())
+            {
+                Logger.WriteLine("Himpq floating window: WM_SHOWWINDOW show=" + m.WParam + " reason=" + m.LParam);
+            }
+
+            if (m.Msg == WM_ACTIVATE && IsFloatingTopMostLocked())
+            {
+                Logger.WriteLine("Himpq floating window: WM_ACTIVATE state=0x" + m.WParam.ToInt64().ToString("X") + " other=0x" + m.LParam.ToInt64().ToString("X"));
+            }
+
+            if (m.Msg == WM_NCACTIVATE && IsFloatingTopMostLocked())
+            {
+                Logger.WriteLine("Himpq floating window: WM_NCACTIVATE active=" + m.WParam);
+            }
+
+            base.WndProc(ref m);
+        }
+
+        private bool IsFloatingTopMostLocked()
+        {
+            if (!IsFloatingMode || !IsHandleCreated) return false;
+            return HimpqConfig.Load().taskbar_floating_topmost == 1;
+        }
+
+        private void LogWindowPosChange(string phase, IntPtr insertAfter, uint flags)
+        {
+            if (HimpqConfig.Load().debug_mode != 1) return;
+
+            string insertAfterText = insertAfter == HWND_TOPMOST ? "TOPMOST"
+                : insertAfter == HWND_NOTOPMOST ? "NOTOPMOST"
+                : insertAfter == HWND_BOTTOM ? "BOTTOM"
+                : DescribeWindow(insertAfter);
+            string foregroundText = DescribeWindow(GetForegroundWindow());
+            Logger.WriteLine("Himpq floating window: WM_WINDOWPOS" + phase + " insertAfter=" + insertAfterText + " flags=0x" + flags.ToString("X") + " foreground=" + foregroundText);
+        }
+
+        private static string DescribeWindow(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return "0x0";
+            if (hWnd == HWND_TOPMOST) return "TOPMOST";
+            if (hWnd == HWND_NOTOPMOST) return "NOTOPMOST";
+            if (hWnd == HWND_BOTTOM) return "BOTTOM";
+
+            var className = new StringBuilder(256);
+            var title = new StringBuilder(Math.Max(2, GetWindowTextLength(hWnd) + 1));
+            GetClassName(hWnd, className, className.Capacity);
+            GetWindowText(hWnd, title, title.Capacity);
+
+            string result = "0x" + hWnd.ToInt64().ToString("X");
+            if (className.Length > 0)
+                result += "/" + className;
+            if (title.Length > 0)
+                result += ":" + title;
+            return result;
+        }
+
+        private bool IsFloatingClickThroughEnabled()
+        {
+            return IsFloatingMode && HimpqConfig.Load().taskbar_floating_click_through == 1;
+        }
+
+        private void LogFloatingWindowState(string reason)
+        {
+            if (HimpqConfig.Load().debug_mode != 1) return;
+            if (!IsHandleCreated) return;
+
+            int cloaked = -1;
+            int cloakedHr = DwmGetWindowAttribute(Handle, DWMWA_CLOAKED, out cloaked, sizeof(int));
+            bool hasRect = GetWindowRect(Handle, out RECT rect);
+            string rectText = hasRect
+                ? rect.Left + "," + rect.Top + "," + rect.Right + "," + rect.Bottom
+                : "unavailable";
+            string cloakedText = cloakedHr == 0
+                ? cloaked.ToString()
+                : "hr=0x" + cloakedHr.ToString("X8");
+
+            Logger.WriteLine(
+                "Himpq floating window: " + reason +
+                " nativeVisible=" + IsWindowVisible(Handle) +
+                " managedVisible=" + Visible +
+                " cloaked=" + cloakedText +
+                " rect=" + rectText +
+                " topMost=" + TopMost);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            LogFloatingWindowState("handle destroyed");
+            _topMostKeeperTimer?.Stop();
+            base.OnHandleDestroyed(e);
+        }
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            LogFloatingWindowState("visible changed");
         }
 
         private static string GetMaxWidthText(string text)
@@ -622,13 +965,39 @@ namespace HimpqEnhanced
             r = ReplaceToken(r, "{GPU_TEMP}", HardwareControl.gpuTemp, "N0");
             r = ReplaceToken(r, "{CPU_USAGE}", HardwareControl.cpuUsage, "N0");
             r = ReplaceToken(r, "{GPU_USAGE}", HardwareControl.gpuUsage, "N0");
+            r = ReplaceToken(r, "{CPU_FREQ}", HardwareControl.cpuFrequencyMHz, "N0");
+            r = ReplaceToken(r, "{GPU_FREQ}", HardwareControl.gpuFrequencyMHz, "N0");
             r = ReplaceToken(r, "{RAM_USAGE}", HardwareControl.ramUsage, "N0");
+            r = ReplaceToken(r, "{RAM_USED}", HardwareControl.ramUsedMb, "N0");
+            r = ReplaceToken(r, "{VRAM_USAGE}", HardwareControl.vramUsage, "N0");
+            r = ReplaceToken(r, "{VRAM_USED}", HardwareControl.vramUsedMb, "N0");
             r = ReplaceToken(r, "{CPU_POWER}", HardwareControl.cpuPower, "F1");
             r = ReplaceToken(r, "{GPU_POWER}", HardwareControl.gpuPower, "F1");
+            r = ReplaceToken(r, "{TOTAL_POWER}", HardwareControl.totalPower, "F1");
             r = ReplaceToken(r, "{BATTERY_POWER}", HardwareControl.batteryRate is decimal bd ? (float?)Math.Abs((float)bd) : null, "F1");
+            r = ReplaceToken(r, "{BATTERY_LEVEL}", BatteryValue(HardwareControl.batteryCapacity), "F1");
+            r = ReplaceToken(r, "{BATTERY_HEALTH}", BatteryValue(HardwareControl.batteryHealth), "F1");
+            r = r.Replace("{POWER_SOURCE}", GetPowerSourceText());
+            r = r.Replace("{MODE}", Modes.GetCurrentName() ?? "--");
             r = r.Replace("{FAN_CPU}", HardwareControl.cpuFanRPM?.ToString() ?? "--");
             r = r.Replace("{FAN_GPU}", HardwareControl.gpuFanRPM?.ToString() ?? "--");
+            r = r.Replace("{FAN_MID}", HardwareControl.midFanRPM?.ToString() ?? "--");
             return r;
+        }
+
+        private static float? BatteryValue(decimal value)
+        {
+            return value >= 0 ? (float)value : null;
+        }
+
+        private static string GetPowerSourceText()
+        {
+            return Program.currentSource switch
+            {
+                Program.PowerSource.Barrel => "AC",
+                Program.PowerSource.USBC => "USB-C",
+                _ => "BAT",
+            };
         }
 
         private static string ReplaceToken(string template, string token, float? value, string format)
@@ -689,6 +1058,8 @@ namespace HimpqEnhanced
         {
             _updateTimer?.Stop();
             _updateTimer?.Dispose();
+            _topMostKeeperTimer?.Stop();
+            _topMostKeeperTimer?.Dispose();
             ClearSensorFlags();
             _displayFont?.Dispose();
             _labelBrush.Dispose();
