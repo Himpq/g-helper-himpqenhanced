@@ -34,7 +34,7 @@ namespace HimpqEnhanced
         private const int MA_NOACTIVATE = 3;
         private const uint GW_HWNDPREV = 3;
         private const int DWMWA_CLOAKED = 14;
-        private const int TopMostKeeperIntervalMs = 250;
+        private const int TopMostKeeperIntervalMs = 100;
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
         private static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
@@ -118,6 +118,8 @@ namespace HimpqEnhanced
             ["{GPU_USAGE}"] = "100",
             ["{CPU_FREQ}"] = "9999",
             ["{GPU_FREQ}"] = "9999",
+            ["{CPU_FREQ_GHZ}"] = "10.00",
+            ["{GPU_FREQ_GHZ}"] = "10.00",
             ["{RAM_USAGE}"] = "100",
             ["{RAM_USED}"] = "99999",
             ["{VRAM_USAGE}"] = "100",
@@ -589,7 +591,7 @@ namespace HimpqEnhanced
             bool readUsage = items.Any(i => i.token is "CPU_USAGE" or "GPU_USAGE");
             bool readMemory = items.Any(i => i.token is "RAM_USAGE" or "RAM_USED" or "VRAM_USAGE" or "VRAM_USED");
             bool readPower = items.Any(i => i.token is "CPU_POWER" or "GPU_POWER" or "TOTAL_POWER");
-            bool readFrequency = items.Any(i => i.token is "CPU_FREQ" or "GPU_FREQ");
+            bool readFrequency = items.Any(i => i.token is "CPU_FREQ" or "GPU_FREQ" or "CPU_FREQ_GHZ" or "GPU_FREQ_GHZ");
             bool readBatteryState = items.Any(i => i.token is "BATTERY_POWER" or "BATTERY_LEVEL" or "BATTERY_HEALTH");
 
             HardwareControl.taskbarReadFans = readFans;
@@ -967,6 +969,8 @@ namespace HimpqEnhanced
             r = ReplaceToken(r, "{GPU_USAGE}", HardwareControl.gpuUsage, "N0");
             r = ReplaceToken(r, "{CPU_FREQ}", HardwareControl.cpuFrequencyMHz, "N0");
             r = ReplaceToken(r, "{GPU_FREQ}", HardwareControl.gpuFrequencyMHz, "N0");
+            r = ReplaceToken(r, "{CPU_FREQ_GHZ}", FrequencyGhz(HardwareControl.cpuFrequencyMHz), "F2");
+            r = ReplaceToken(r, "{GPU_FREQ_GHZ}", FrequencyGhz(HardwareControl.gpuFrequencyMHz), "F2");
             r = ReplaceToken(r, "{RAM_USAGE}", HardwareControl.ramUsage, "N0");
             r = ReplaceToken(r, "{RAM_USED}", HardwareControl.ramUsedMb, "N0");
             r = ReplaceToken(r, "{VRAM_USAGE}", HardwareControl.vramUsage, "N0");
@@ -988,6 +992,11 @@ namespace HimpqEnhanced
         private static float? BatteryValue(decimal value)
         {
             return value >= 0 ? (float)value : null;
+        }
+
+        private static float? FrequencyGhz(int? mhz)
+        {
+            return mhz is > 0 ? mhz.Value / 1000f : null;
         }
 
         private static string GetPowerSourceText()

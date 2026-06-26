@@ -71,6 +71,9 @@ public static class HardwareControl
     static bool _chargeWatt = AppConfig.Is("charge_watt");
 
     static PerformanceCounter? _cpuTempCounter;
+    static PerformanceCounter? _cpuActualFrequencyCounter;
+    static bool _cpuActualFrequencyUnavailable;
+    static bool _cpuActualFrequencyInvalidLogged;
 
     #region Native Battery API
 
@@ -83,7 +86,9 @@ public static class HardwareControl
         uint OutputBufferLength);
 
     private const int SystemBatteryState = 5;
-    private const int ProcessorInformation = 11;
+    private const string ProcessorInformationCategory = "Processor Information";
+    private const string CpuActualFrequencyCounter = "Actual Frequency";
+    private const string ProcessorTotalInstance = "_Total";
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SYSTEM_BATTERY_STATE
@@ -102,17 +107,6 @@ public static class HardwareControl
         public uint EstimatedTime;
         public uint DefaultAlert1;
         public uint DefaultAlert2;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PROCESSOR_POWER_INFORMATION
-    {
-        public uint Number;
-        public uint MaxMhz;
-        public uint CurrentMhz;
-        public uint MhzLimit;
-        public uint MaxIdleState;
-        public uint CurrentIdleState;
     }
 
     private static SYSTEM_BATTERY_STATE? GetNativeBatteryState()
@@ -964,37 +958,34 @@ public static class HardwareControl
 
     public static int? GetCPUFrequency()
     {
-        int count = Environment.ProcessorCount;
-        if (count <= 0) return null;
+        if (_cpuActualFrequencyUnavailable) return null;
 
-        int size = Marshal.SizeOf<PROCESSOR_POWER_INFORMATION>();
-        IntPtr ptr = Marshal.AllocHGlobal(size * count);
         try
         {
-            uint status = CallNtPowerInformation(ProcessorInformation, IntPtr.Zero, 0, ptr, (uint)(size * count));
-            if (status != 0) return null;
+            _cpuActualFrequencyCounter ??= new PerformanceCounter(
+                ProcessorInformationCategory,
+                CpuActualFrequencyCounter,
+                ProcessorTotalInstance,
+                readOnly: true);
 
-            long total = 0;
-            int valid = 0;
-            for (int i = 0; i < count; i++)
+            float frequency = _cpuActualFrequencyCounter.NextValue();
+            if (frequency is > 0 and < 10000)
+                return (int)Math.Round(frequency);
+
+            if (!_cpuActualFrequencyInvalidLogged)
             {
-                var info = Marshal.PtrToStructure<PROCESSOR_POWER_INFORMATION>(IntPtr.Add(ptr, i * size));
-                if (info.CurrentMhz == 0) continue;
-
-                total += info.CurrentMhz;
-                valid++;
+                _cpuActualFrequencyInvalidLogged = true;
+                Logger.WriteLine("CPU Actual Frequency counter returned invalid MHz value: " + frequency);
             }
-
-            return valid > 0 ? (int)Math.Round((double)total / valid) : null;
+            return null;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine("CPU frequency reading failed: " + ex.Message);
+            _cpuActualFrequencyUnavailable = true;
+            _cpuActualFrequencyCounter?.Dispose();
+            _cpuActualFrequencyCounter = null;
+            LogSensorReadFailureOnce("CPU Actual Frequency counter", ex);
             return null;
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(ptr);
         }
     }
 

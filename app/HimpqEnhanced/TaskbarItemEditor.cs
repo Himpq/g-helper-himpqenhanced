@@ -8,7 +8,7 @@ namespace HimpqEnhanced
         private const int WindowWidth = 820;
         private const int WindowHeight = 780;
         private const int MarginSize = 20;
-        private const int RowHeight = 44;
+        private const int RowHeight = 52;
         private const int ListTopGap = 14;
         private const int ListBottomGap = 18;
         private const int MoveButtonEditorGap = 16;
@@ -35,6 +35,8 @@ namespace HimpqEnhanced
             ("GPU_USAGE", "GPU 使用率", "GPU", "%", 0),
             ("CPU_FREQ", "CPU 频率", "CPU", "MHz", 0),
             ("GPU_FREQ", "GPU 频率", "GPU", "MHz", 0),
+            ("CPU_FREQ_GHZ", "CPU 频率(GHz)", "CPU", "GHz", 0),
+            ("GPU_FREQ_GHZ", "GPU 频率(GHz)", "GPU", "GHz", 0),
             ("RAM_USAGE", "内存使用率", "RAM", "%", 1),
             ("RAM_USED", "内存占用", "RAM", "MB", 1),
             ("VRAM_USAGE", "显存使用率", "VRAM", "%", 1),
@@ -85,6 +87,9 @@ namespace HimpqEnhanced
         public List<TaskbarItemConfig> GetItems() => _items.ToList();
 
         private static int NormalizeRow(int row) => Math.Abs(row) % 2;
+        private static int ToDisplayRow(int row) => NormalizeRow(row) + 1;
+        private static int FromDisplayRow(decimal row) => NormalizeRow((int)row - 1);
+        private static string FormatDisplayRow(int row) => $"第 {ToDisplayRow(row)} 行";
 
         private static string GetDescription(string token)
         {
@@ -145,7 +150,7 @@ namespace HimpqEnhanced
 
             var hint = new Label
             {
-                Text = "勾选传感器即可启用；用上移/下移调整顺序。显示行使用 0 或 1。",
+                Text = "勾选项目即可启用；选中后用上移/下移调整顺序。频率可选择 MHz 或 GHz 项，显示行使用 1 或 2。",
                 AutoSize = false,
                 Location = new Point(MarginSize, title.Bottom + 12),
                 Size = new Size(WindowWidth - MarginSize * 2, 1),
@@ -231,11 +236,11 @@ namespace HimpqEnhanced
             };
 
             var lblRow = new Label { Text = "显示行", Location = new Point(504, 36), Size = new Size(86, 32), TextAlign = ContentAlignment.MiddleLeft };
-            _numRow = new NumericUpDown { Location = new Point(596, 36), Size = new Size(66, 32), Minimum = 0, Maximum = 1 };
+            _numRow = new NumericUpDown { Location = new Point(596, 36), Size = new Size(66, 32), Minimum = 1, Maximum = 2 };
             _numRow.ValueChanged += (_, _) =>
             {
                 if (_updating || _selectedIndex < 0) return;
-                _items[_selectedIndex].row = NormalizeRow((int)_numRow.Value);
+                _items[_selectedIndex].row = FromDisplayRow(_numRow.Value);
                 UpdateSelectedRowDisplay();
             };
 
@@ -267,7 +272,7 @@ namespace HimpqEnhanced
             };
             Controls.Add(btnCancel);
 
-            RebuildList();
+            UpdateSelectionHighlight();
         }
 
         private void ApplyEditorTheme()
@@ -309,14 +314,31 @@ namespace HimpqEnhanced
             var tmp = _items[_selectedIndex];
             _items[_selectedIndex] = _items[newIdx];
             _items[newIdx] = tmp;
+
+            var selectedPanel = GetRowPanel(_selectedIndex);
+            var targetPanel = GetRowPanel(newIdx);
             _selectedIndex = newIdx;
-            RebuildList();
+
+            if (selectedPanel is not null && targetPanel is not null)
+            {
+                int selectedTop = selectedPanel.Top;
+                selectedPanel.Top = targetPanel.Top;
+                targetPanel.Top = selectedTop;
+                UpdateItemRow(selectedPanel, newIdx, _items[newIdx]);
+                UpdateItemRow(targetPanel, newIdx - direction, _items[newIdx - direction]);
+            }
+            else
+            {
+                RebuildList();
+            }
+
             SelectItem(newIdx);
         }
 
         private void RebuildList()
         {
             _listPanel.SuspendLayout();
+            _listPanel.AutoScrollPosition = Point.Empty;
             _listPanel.Controls.Clear();
 
             int y = 0;
@@ -328,43 +350,70 @@ namespace HimpqEnhanced
                 y += RowHeight;
             }
 
+            _listPanel.AutoScrollMinSize = new Size(0, y);
             _listPanel.ResumeLayout(false);
             UpdateSelectionHighlight();
+        }
+
+        private Panel? GetRowPanel(int index)
+        {
+            foreach (Control control in _listPanel.Controls)
+                if (control is Panel panel && panel.Tag is int idx && idx == index)
+                    return panel;
+            return null;
         }
 
         private Panel CreateItemRow(int idx, TaskbarItemConfig item)
         {
             var panel = new Panel
             {
-                Size = new Size(_listPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4, RowHeight - 2),
+                Size = new Size(_listPanel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4, RowHeight - 4),
                 Tag = idx,
                 BackColor = idx == _selectedIndex ? RForm.buttonMain : RForm.buttonSecond
             };
 
             var chk = new CheckBox
             {
-                Location = new Point(10, 11),
+                Name = "Enabled",
+                Location = new Point(10, 15),
                 Size = new Size(22, 22),
                 Checked = item.enabled,
                 Tag = idx
             };
-            chk.CheckedChanged += (_, _) => item.enabled = chk.Checked;
+            chk.CheckedChanged += (sender, _) =>
+            {
+                if (sender is CheckBox cb && cb.Tag is int itemIdx && itemIdx >= 0 && itemIdx < _items.Count)
+                    _items[itemIdx].enabled = cb.Checked;
+            };
+            chk.Click += (_, _) => SelectItemFromControl(chk);
 
             var desc = new Label
             {
                 Name = "Description",
-                Location = new Point(40, 9),
-                Size = new Size(150, 26),
+                Location = new Point(42, 4),
+                Size = new Size(154, 23),
                 Text = GetDescription(item.token),
                 TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = RForm.foreMain
+                ForeColor = RForm.foreMain,
+                Font = new Font(Font, FontStyle.Bold)
+            };
+
+            var token = new Label
+            {
+                Name = "Token",
+                Location = new Point(42, 27),
+                Size = new Size(154, 18),
+                Text = item.token,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = RForm.colorGray,
+                Font = new Font(Font.FontFamily, 8F)
             };
 
             var preview = new Label
             {
                 Name = "Preview",
-                Location = new Point(200, 9),
-                Size = new Size(390, 26),
+                Location = new Point(214, 7),
+                Size = new Size(340, 34),
                 Text = GetPreview(item),
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = RForm.colorGray,
@@ -374,22 +423,55 @@ namespace HimpqEnhanced
             var row = new Label
             {
                 Name = "Row",
-                Location = new Point(610, 9),
-                Size = new Size(88, 26),
-                Text = $"第 {NormalizeRow(item.row)} 行",
+                Location = new Point(572, 13),
+                Size = new Size(84, 24),
+                Text = FormatDisplayRow(item.row),
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = RForm.colorGray
             };
 
-            foreach (Control child in new Control[] { chk, desc, preview, row })
+            foreach (Control child in new Control[] { desc, token, preview, row })
             {
                 child.BackColor = panel.BackColor;
-                child.Click += (_, _) => SelectItem(idx);
+                child.Click += (_, _) => SelectItemFromControl(child);
             }
-            panel.Click += (_, _) => SelectItem(idx);
+            panel.Click += (_, _) => SelectItemFromControl(panel);
 
-            panel.Controls.AddRange(new Control[] { chk, desc, preview, row });
+            panel.Controls.AddRange(new Control[] { chk, desc, token, preview, row });
             return panel;
+        }
+
+        private void UpdateItemRow(Panel panel, int idx, TaskbarItemConfig item)
+        {
+            panel.Tag = idx;
+            foreach (Control child in panel.Controls)
+            {
+                child.BackColor = panel.BackColor;
+                if (child is CheckBox chk && child.Name == "Enabled")
+                {
+                    chk.Tag = idx;
+                    if (chk.Checked != item.enabled)
+                        chk.Checked = item.enabled;
+                }
+                else if (child.Name == "Description")
+                    child.Text = GetDescription(item.token);
+                else if (child.Name == "Token")
+                    child.Text = item.token;
+                else if (child.Name == "Preview")
+                    child.Text = GetPreview(item);
+                else if (child.Name == "Row")
+                    child.Text = FormatDisplayRow(item.row);
+            }
+        }
+
+        private void SelectItemFromControl(Control control)
+        {
+            Control? current = control;
+            while (current is not null && current.Parent != _listPanel)
+                current = current.Parent;
+
+            if (current?.Tag is int idx)
+                SelectItem(idx);
         }
 
         private static string GetPreview(TaskbarItemConfig item)
@@ -408,7 +490,7 @@ namespace HimpqEnhanced
             var item = _items[idx];
             _txtLabel.Text = item.label;
             _txtSuffix.Text = item.suffix;
-            _numRow.Value = NormalizeRow(item.row);
+            _numRow.Value = ToDisplayRow(item.row);
             _tokenDescLabel.Text = $"传感器: {item.token}    示例最大值: {GetMaxPreview(item)}";
             _updating = false;
             UpdateSelectionHighlight();
@@ -416,17 +498,20 @@ namespace HimpqEnhanced
 
         private void UpdateSelectedRowDisplay()
         {
-            if (_selectedIndex < 0 || _selectedIndex >= _listPanel.Controls.Count)
+            if (_selectedIndex < 0)
                 return;
 
-            var panel = _listPanel.Controls[_selectedIndex];
+            var panel = GetRowPanel(_selectedIndex);
+            if (panel is null)
+                return;
+
             var item = _items[_selectedIndex];
             foreach (Control child in panel.Controls)
             {
                 if (child.Name == "Preview")
                     child.Text = GetPreview(item);
                 else if (child.Name == "Row")
-                    child.Text = $"第 {NormalizeRow(item.row)} 行";
+                    child.Text = FormatDisplayRow(item.row);
             }
             _tokenDescLabel.Text = $"传感器: {item.token}    示例最大值: {GetMaxPreview(item)}";
         }
@@ -436,7 +521,8 @@ namespace HimpqEnhanced
             var maxMap = new Dictionary<string, string>
             {
                 ["CPU_TEMP"] = "100", ["GPU_TEMP"] = "100",
-                ["CPU_USAGE"] = "100", ["GPU_USAGE"] = "100", ["CPU_FREQ"] = "9999", ["GPU_FREQ"] = "9999", ["RAM_USAGE"] = "100",
+                ["CPU_USAGE"] = "100", ["GPU_USAGE"] = "100", ["CPU_FREQ"] = "9999", ["GPU_FREQ"] = "9999",
+                ["CPU_FREQ_GHZ"] = "10.00", ["GPU_FREQ_GHZ"] = "10.00", ["RAM_USAGE"] = "100",
                 ["RAM_USED"] = "99999", ["VRAM_USAGE"] = "100", ["VRAM_USED"] = "99999",
                 ["CPU_POWER"] = "100.0", ["GPU_POWER"] = "100.0", ["TOTAL_POWER"] = "100.0", ["BATTERY_POWER"] = "100.0",
                 ["BATTERY_LEVEL"] = "100.0", ["BATTERY_HEALTH"] = "100.0", ["POWER_SOURCE"] = "USB-C", ["MODE"] = "增强 (Turbo)",
