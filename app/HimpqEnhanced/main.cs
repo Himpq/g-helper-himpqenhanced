@@ -134,6 +134,16 @@ namespace HimpqEnhanced
             _taskbarWindow?.UpdateFont(fontName, fontSize);
         }
 
+        public static void SuspendTopMostKeeper()
+        {
+            _taskbarWindow?.SuspendTopMostKeeper();
+        }
+
+        public static void ResumeTopMostKeeper()
+        {
+            _taskbarWindow?.ResumeTopMostKeeper();
+        }
+
         public static void StopTaskbarWindow()
         {
             if (_taskbarWindow is not null && !_taskbarWindow.IsDisposed)

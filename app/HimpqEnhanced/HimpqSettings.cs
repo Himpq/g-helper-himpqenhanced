@@ -1302,6 +1302,7 @@ namespace HimpqEnhanced
             };
 
             Logger.WriteLine("Himpq config export: opening save dialog.");
+            Main.SuspendTopMostKeeper();
             DialogResult result;
             try
             {
@@ -1309,10 +1310,12 @@ namespace HimpqEnhanced
             }
             catch (Exception ex)
             {
+                Main.ResumeTopMostKeeper();
                 Logger.WriteLine("Himpq config export dialog failed: " + ex.Message);
                 MessageBox.Show(this, "打开导出窗口失败：" + ex.Message, "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
+            Main.ResumeTopMostKeeper();
 
             Logger.WriteLine("Himpq config export: save dialog result=" + result);
             if (result != DialogResult.OK) return;
@@ -1346,6 +1349,7 @@ namespace HimpqEnhanced
             };
 
             Logger.WriteLine("Himpq config import: opening open dialog.");
+            Main.SuspendTopMostKeeper();
             DialogResult result;
             try
             {
@@ -1353,10 +1357,12 @@ namespace HimpqEnhanced
             }
             catch (Exception ex)
             {
+                Main.ResumeTopMostKeeper();
                 Logger.WriteLine("Himpq config import dialog failed: " + ex.Message);
                 MessageBox.Show(this, "打开导入窗口失败：" + ex.Message, "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
+            Main.ResumeTopMostKeeper();
 
             Logger.WriteLine("Himpq config import: open dialog result=" + result);
             if (result != DialogResult.OK) return;

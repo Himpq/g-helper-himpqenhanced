@@ -202,6 +202,7 @@ namespace HimpqEnhanced
         private bool _textShadowEnabled;
         private System.Windows.Forms.Timer? _topMostKeeperTimer;
         private System.Windows.Forms.Timer? _shellSurfaceMonitorTimer;
+        private bool _topMostKeeperSuspended;
         private bool _shellSurfaceWasActive;
         private string _lastShellSurface = "";
         private long _lastTopMostKeeperLog;
@@ -361,6 +362,37 @@ namespace HimpqEnhanced
             });
         }
 
+        public void SuspendTopMostKeeper()
+        {
+            if (IsHandleCreated && InvokeRequired)
+            {
+                BeginInvoke((Action)SuspendTopMostKeeper);
+                return;
+            }
+
+            _topMostKeeperSuspended = true;
+            _topMostKeeperTimer?.Stop();
+        }
+
+        public void ResumeTopMostKeeper()
+        {
+            if (IsHandleCreated && InvokeRequired)
+            {
+                BeginInvoke((Action)ResumeTopMostKeeper);
+                return;
+            }
+
+            _topMostKeeperSuspended = false;
+            var config = HimpqConfig.Load();
+            if (IsFloatingMode && config.taskbar_window_enabled == 1 &&
+                config.taskbar_window_floating_enabled == 1 && config.taskbar_floating_topmost == 1)
+            {
+                _topMostKeeperTimer ??= CreateTopMostKeeperTimer();
+                if (!_topMostKeeperTimer.Enabled)
+                    _topMostKeeperTimer.Start();
+            }
+        }
+
         public void RefreshLayout()
         {
             _layoutDirty = true;
@@ -510,7 +542,7 @@ namespace HimpqEnhanced
 
         private void KeepFloatingTopMost()
         {
-            if (!IsFloatingMode || IsDisposed || !IsHandleCreated)
+            if (_topMostKeeperSuspended || !IsFloatingMode || IsDisposed || !IsHandleCreated)
             {
                 _topMostKeeperTimer?.Stop();
                 return;
@@ -1056,7 +1088,7 @@ namespace HimpqEnhanced
 
         private bool IsFloatingTopMostLocked()
         {
-            if (!IsFloatingMode || !IsHandleCreated) return false;
+            if (_topMostKeeperSuspended || !IsFloatingMode || !IsHandleCreated) return false;
             return HimpqConfig.Load().taskbar_floating_topmost == 1;
         }
 
