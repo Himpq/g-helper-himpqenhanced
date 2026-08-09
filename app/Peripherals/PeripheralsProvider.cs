@@ -1,5 +1,6 @@
 ﻿using GHelper.Peripherals.Mouse;
 using GHelper.Peripherals.Mouse.Models;
+using GHelper.USB;
 using HidSharp;
 using System.Runtime.CompilerServices;
 
@@ -465,7 +466,8 @@ namespace GHelper.Peripherals
             timer.Stop();
             Logger.WriteLine("HID Device Event: Checking for new ASUS Mice");
             DetectAllAsusMice();
-            if (AppConfig.IsZ13()) Program.inputDispatcher.Init();
+            if (AppConfig.IsDetachableKeyboard()) Program.inputDispatcher.Init();
+            XGM.Init();
         }
     }
 }

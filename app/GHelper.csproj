@@ -19,9 +19,9 @@
     <OutputPath>bin\x64\$(Configuration)\</OutputPath>
     <IntermediateOutputPath>obj\x64\$(Configuration)\</IntermediateOutputPath>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
-    <AssemblyVersion>0.268.1</AssemblyVersion>
-    <Version>0.268.1-7he</Version>
-    <InformationalVersion>0.268.1-7he</InformationalVersion>
+    <AssemblyVersion>0.272.1</AssemblyVersion>
+    <Version>0.272.1-7he</Version>
+    <InformationalVersion>0.272.1-7he</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>

@@ -532,7 +532,7 @@ public static class HardwareControl
             LogSensorReadFailureOnce("dGPU temperature", ex);
         }
 
-        if (gpuTemp is null || gpuTemp < 0)
+        if (gpuTemp is null || gpuTemp < 0 || gpuTemp >= 125)
         {
             if (GetIntegratedGPUTemperature() is { } integratedTempAfterRead)
             {
@@ -979,7 +979,7 @@ private static void LogSensorReadFailureOnce(string source, Exception ex)
         }
     }
 
-    private static AmdGpuControl AmdApu() => GpuControl as AmdGpuControl ?? (_amdApuControl ??= new AmdGpuControl());
+    public static AmdGpuControl AmdApu() => GpuControl as AmdGpuControl ?? (_amdApuControl ??= new AmdGpuControl());
 
     private static float? GetAmdApuPower()
     {

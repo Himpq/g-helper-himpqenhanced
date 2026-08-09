@@ -71,6 +71,8 @@ namespace GHelper.Gpu
 
             Aura.CustomRGB.ApplyGPUColor(gpuMode);
 
+            Task.Run(CheckGpuError);
+
         }
 
 
@@ -352,7 +354,7 @@ namespace GHelper.Gpu
 
         public void CaptureNvBootState()
         {
-            nvRestartPending = Program.acpi.DeviceGet(AsusACPI.GPUEco) == 1;
+            nvRestartPending = Program.acpi.IsNVidiaGPU() && Program.acpi.DeviceGet(AsusACPI.GPUEco) == 1;
         }
 
         public void StandardModeFix()
@@ -362,6 +364,20 @@ namespace GHelper.Gpu
 
             Logger.WriteLine("Forcing Standard Mode on shutdown");
             Program.acpi.SetGPUEco(0);
+        }
+
+        public static string? gpuError = null;
+
+        void CheckGpuError()
+        {
+            string? error = DeviceHelper.GetGpuError();
+
+            if (gpuError != error)
+            {
+                gpuError = error;
+                if (error != null) Logger.WriteLine(error);
+                settings.VisualiseGPUMode();
+            }
         }
 
     }

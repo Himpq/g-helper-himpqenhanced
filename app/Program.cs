@@ -116,7 +116,7 @@ namespace GHelper
 
             acpi = new AsusACPI();
 
-            if (!acpi.IsConnected() && AppConfig.IsASUS())
+            if (!acpi.IsConnected() && AppConfig.IsASUS() && !AppConfig.IsDesktop())
             {
                 DialogResult dialogResult = MessageBox.Show(Properties.Strings.ACPIError, Properties.Strings.StartupError, MessageBoxButtons.YesNo);
                 if (dialogResult == DialogResult.Yes)
@@ -149,6 +149,7 @@ namespace GHelper
             WM_TASKBARCREATED = RegisterWindowMessage("TaskbarCreated");
             Logger.WriteLine($"Tray Icon: {trayIcon.Visible} | {WM_TASKBARCREATED}");
 
+            Modes.InitFullSpeed();
             settingsForm.SetContextMenu();
             trayIcon.MouseClick += TrayIcon_MouseClick;
             trayIcon.MouseMove += TrayIcon_MouseMove;
@@ -336,7 +337,8 @@ namespace GHelper
 
             modeControl.AutoPerformance(powerChanged);
 
-            settingsForm.matrixControl.SetDevice(true);
+            if (powerChanged) settingsForm.matrixControl.SetMatrix(true);
+            else settingsForm.matrixControl.SetDevice(true);
             InputDispatcher.InitStatusLed();
             if (init) NumberPad.Init();
             XGM.InitLight();
