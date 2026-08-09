@@ -20,8 +20,8 @@
     <IntermediateOutputPath>obj\x64\$(Configuration)\</IntermediateOutputPath>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
     <AssemblyVersion>0.264.1</AssemblyVersion>
-    <Version>0.264.1-he</Version>
-    <InformationalVersion>0.264.1-he</InformationalVersion>
+    <Version>0.264.1-7he</Version>
+    <InformationalVersion>0.264.1-7he</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
