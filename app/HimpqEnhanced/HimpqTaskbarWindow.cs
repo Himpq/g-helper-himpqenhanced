@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Text;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using GHelper;
@@ -22,6 +23,7 @@ namespace HimpqEnhanced
         private const uint SWP_NOZORDER = 0x0004;
         private const uint SWP_NOOWNERZORDER = 0x0200;
         private const uint SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_SHOWWINDOW = 0x0040;
         private const int SW_SHOWNOACTIVATE = 4;
         private const int WM_NCHITTEST = 0x0084;
         private const int WM_WINDOWPOSCHANGING = 0x0046;
@@ -32,9 +34,12 @@ namespace HimpqEnhanced
         private const int WM_NCACTIVATE = 0x0086;
         private const int HTTRANSPARENT = -1;
         private const int MA_NOACTIVATE = 3;
+        private const int GWLP_HWNDPARENT = -8;
         private const uint GW_HWNDPREV = 3;
         private const int DWMWA_CLOAKED = 14;
         private const int TopMostKeeperIntervalMs = 100;
+        private const int ShellSurfaceMonitorIntervalMs = 150;
+        private static readonly IntPtr HWND_TOP = IntPtr.Zero;
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
         private static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
@@ -59,8 +64,20 @@ namespace HimpqEnhanced
         [DllImport("user32.dll", SetLastError = true)]
         private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr", SetLastError = true)]
+        private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLong", SetLastError = true)]
+        private static extern int GetWindowLongPtr32(IntPtr hWnd, int nIndex);
+
         [DllImport("user32.dll", SetLastError = true)]
         private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr", SetLastError = true)]
+        private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
+        private static extern int SetWindowLongPtr32(IntPtr hWnd, int nIndex, int dwNewLong);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -81,6 +98,9 @@ namespace HimpqEnhanced
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -181,7 +201,11 @@ namespace HimpqEnhanced
         private bool _darkTheme;
         private bool _textShadowEnabled;
         private System.Windows.Forms.Timer? _topMostKeeperTimer;
+        private System.Windows.Forms.Timer? _shellSurfaceMonitorTimer;
+        private bool _shellSurfaceWasActive;
+        private string _lastShellSurface = "";
         private long _lastTopMostKeeperLog;
+        private IntPtr _floatingOwnerTaskbar;
         public bool IsFloatingMode { get; }
 
         public HimpqTaskbarWindow()
@@ -191,7 +215,7 @@ namespace HimpqEnhanced
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
-            TopMost = !IsFloatingMode;
+            TopMost = !IsFloatingMode || config.taskbar_floating_topmost == 1;
             BackColor = Color.Black;
             TransparencyKey = Color.Black;
             MinimizeBox = false;
@@ -262,6 +286,7 @@ namespace HimpqEnhanced
                 _updateTimer = new System.Windows.Forms.Timer { Interval = GetRefreshInterval(HimpqConfig.Load()) };
                 _updateTimer.Tick += OnUpdateTick;
                 _updateTimer.Start();
+                ConfigureShellSurfaceMonitor(config);
                 _layoutDirty = true;
                 UpdateData();
             });
@@ -308,6 +333,7 @@ namespace HimpqEnhanced
                 ApplyWindowOptions(config);
                 if (_updateTimer is not null && !_updateTimer.Enabled)
                     _updateTimer.Start();
+                ConfigureShellSurfaceMonitor(config);
                 _layoutDirty = true;
                 UpdateData();
                 ShowNoActivate();
@@ -328,6 +354,9 @@ namespace HimpqEnhanced
                 base.Hide();
                 _updateTimer?.Stop();
                 _topMostKeeperTimer?.Stop();
+                _shellSurfaceMonitorTimer?.Stop();
+                _shellSurfaceWasActive = false;
+                _lastShellSurface = "";
                 ClearSensorFlags();
             });
         }
@@ -383,9 +412,51 @@ namespace HimpqEnhanced
         {
             if (!IsFloatingMode || config.taskbar_floating_topmost != 1 || !IsHandleCreated) return;
 
+            EnsureFloatingTaskbarOwner();
             EnsureFloatingExtendedStyles(config);
-            uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+            if (!TopMost)
+                TopMost = true;
+            uint flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW;
             SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, flags);
+        }
+
+        private void EnsureFloatingTaskbarOwner()
+        {
+            if (!IsFloatingMode || !IsHandleCreated) return;
+
+            IntPtr taskbar = GetTaskbarHandle();
+            if (taskbar == IntPtr.Zero || _floatingOwnerTaskbar == taskbar) return;
+
+            if (GetWindowOwner(Handle) == taskbar)
+            {
+                _floatingOwnerTaskbar = taskbar;
+                return;
+            }
+
+            SetWindowOwner(Handle, taskbar);
+            if (GetWindowOwner(Handle) == taskbar)
+            {
+                _floatingOwnerTaskbar = taskbar;
+                LogFloatingOwnerChanged(taskbar);
+            }
+            else
+            {
+                Logger.WriteLine("Himpq floating window: failed to set taskbar owner=" + DescribeWindow(taskbar));
+            }
+        }
+
+        private static IntPtr SetWindowOwner(IntPtr hWnd, IntPtr owner)
+        {
+            return IntPtr.Size == 8
+                ? SetWindowLongPtr64(hWnd, GWLP_HWNDPARENT, owner)
+                : new IntPtr(SetWindowLongPtr32(hWnd, GWLP_HWNDPARENT, owner.ToInt32()));
+        }
+
+        private static IntPtr GetWindowOwner(IntPtr hWnd)
+        {
+            return IntPtr.Size == 8
+                ? GetWindowLongPtr64(hWnd, GWLP_HWNDPARENT)
+                : new IntPtr(GetWindowLongPtr32(hWnd, GWLP_HWNDPARENT));
         }
 
         private void ConfigureTopMostKeeper(HimpqConfigData config)
@@ -405,10 +476,35 @@ namespace HimpqEnhanced
                 _topMostKeeperTimer.Start();
         }
 
+        private void ConfigureShellSurfaceMonitor(HimpqConfigData config)
+        {
+            bool configuredFloating = config.taskbar_window_floating_enabled == 1;
+            if (!IsHandleCreated ||
+                config.taskbar_window_enabled != 1 ||
+                configuredFloating != IsFloatingMode)
+            {
+                _shellSurfaceMonitorTimer?.Stop();
+                _shellSurfaceWasActive = false;
+                _lastShellSurface = "";
+                return;
+            }
+
+            _shellSurfaceMonitorTimer ??= CreateShellSurfaceMonitorTimer();
+            if (!_shellSurfaceMonitorTimer.Enabled)
+                _shellSurfaceMonitorTimer.Start();
+        }
+
         private System.Windows.Forms.Timer CreateTopMostKeeperTimer()
         {
             var timer = new System.Windows.Forms.Timer { Interval = TopMostKeeperIntervalMs };
             timer.Tick += (_, _) => KeepFloatingTopMost();
+            return timer;
+        }
+
+        private System.Windows.Forms.Timer CreateShellSurfaceMonitorTimer()
+        {
+            var timer = new System.Windows.Forms.Timer { Interval = ShellSurfaceMonitorIntervalMs };
+            timer.Tick += (_, _) => MonitorShellSurface();
             return timer;
         }
 
@@ -441,6 +537,148 @@ namespace HimpqEnhanced
             ForceFloatingTopMost(config);
             if (windowAbove != IntPtr.Zero)
                 LogTopMostKeeperReassert(windowAbove);
+        }
+
+        private void MonitorShellSurface()
+        {
+            if (IsDisposed || !IsHandleCreated)
+            {
+                _shellSurfaceMonitorTimer?.Stop();
+                _shellSurfaceWasActive = false;
+                _lastShellSurface = "";
+                return;
+            }
+
+            bool shellSurfaceActive = TryDescribeActiveTaskbarShellSurface(out string description);
+            if (shellSurfaceActive)
+            {
+                if (!_shellSurfaceWasActive)
+                    Logger.WriteLine("Himpq taskbar window: shell surface active mode=" + (IsFloatingMode ? "floating" : "embedded") + " surface=" + description);
+                _shellSurfaceWasActive = true;
+                _lastShellSurface = description;
+                return;
+            }
+
+            if (!_shellSurfaceWasActive) return;
+
+            _shellSurfaceWasActive = false;
+            RestoreAfterShellSurfaceClosed(_lastShellSurface);
+            _lastShellSurface = "";
+        }
+
+        private void RestoreAfterShellSurfaceClosed(string shellSurface)
+        {
+            if (IsFloatingMode)
+                RestoreFloatingTaskbarWindow(shellSurface);
+            else
+                RestoreEmbeddedTaskbarWindow(shellSurface);
+        }
+
+        private void RestoreFloatingTaskbarWindow(string shellSurface)
+        {
+            if (!IsFloatingMode || IsDisposed || !IsHandleCreated) return;
+
+            var config = HimpqConfig.Load();
+            if (config.taskbar_window_enabled != 1 || config.taskbar_window_floating_enabled != 1) return;
+
+            if (_layoutDirty)
+                UpdateData();
+            else
+            {
+                ApplyWindowOptions(config);
+                ApplyPosition(config);
+            }
+
+            if (_updateTimer is not null && !_updateTimer.Enabled)
+                _updateTimer.Start();
+
+            ShowNoActivate();
+            if (config.taskbar_floating_topmost == 1)
+                ForceFloatingTopMost(config);
+            ConfigureTopMostKeeper(config);
+            Invalidate();
+            LogFloatingWindowRestore(shellSurface);
+        }
+
+        private void RestoreEmbeddedTaskbarWindow(string shellSurface)
+        {
+            if (IsFloatingMode || IsDisposed || !IsHandleCreated) return;
+
+            var config = HimpqConfig.Load();
+            if (config.taskbar_window_enabled != 1 || config.taskbar_window_floating_enabled == 1) return;
+
+            if (!_embedded || _hTaskbar == IntPtr.Zero || !IsWindow(_hTaskbar))
+            {
+                _embedded = false;
+                EmbedIntoTaskbar();
+            }
+            if (!_embedded) return;
+
+            if (_layoutDirty)
+                UpdateData();
+            else
+                ApplyPosition(config);
+
+            ShowNoActivate();
+            SetWindowPos(Handle, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            Invalidate();
+            LogEmbeddedWindowRestore(shellSurface);
+        }
+
+        private static bool TryDescribeActiveTaskbarShellSurface(out string description)
+        {
+            IntPtr foreground = GetForegroundWindow();
+            description = DescribeWindow(foreground);
+
+            if (foreground == IntPtr.Zero || !IsWindowVisible(foreground) || IsWindowCloaked(foreground))
+                return false;
+
+            string processName = GetWindowProcessName(foreground);
+            description += " process=" + processName;
+            if (!IsTaskbarShellSurfaceProcess(processName))
+                return false;
+            if (processName == "StartMenuExperienceHost")
+                return true;
+
+            string className = GetWindowClassNameText(foreground);
+            return className is "Windows.UI.Core.CoreWindow"
+                or "Windows.UI.Composition.DesktopWindowContentBridge"
+                or "XamlExplorerHostIslandWindow"
+                or "Shell_TrayWnd";
+        }
+
+        private static bool IsTaskbarShellSurfaceProcess(string processName)
+        {
+            return processName is "StartMenuExperienceHost" or "ShellExperienceHost" or "SearchHost" or "TextInputHost";
+        }
+
+        private static bool IsWindowCloaked(IntPtr hWnd)
+        {
+            return DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0;
+        }
+
+        private static string GetWindowProcessName(IntPtr hWnd)
+        {
+            GetWindowThreadProcessId(hWnd, out uint processId);
+            if (processId == 0) return "";
+
+            try
+            {
+                using var process = Process.GetProcessById((int)processId);
+                return process.ProcessName;
+            }
+            catch (ArgumentException)
+            {
+                return "";
+            }
+            catch (InvalidOperationException)
+            {
+                return "";
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                return "";
+            }
         }
 
         private void LogTopMostKeeperReassert(IntPtr windowAbove)
@@ -678,6 +916,7 @@ namespace HimpqEnhanced
                 HimpqConfig.Save(config);
             }
 
+            EnsureFloatingTaskbarOwner();
             IntPtr zOrder = config.taskbar_floating_topmost == 1 ? HWND_TOPMOST : HWND_NOTOPMOST;
             SetWindowPos(Handle, zOrder, x, y, targetW, targetH, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
@@ -725,7 +964,11 @@ namespace HimpqEnhanced
 
             bool topMost = !IsFloatingMode || config.taskbar_floating_topmost == 1;
             if (IsFloatingMode)
+            {
+                EnsureFloatingTaskbarOwner();
                 EnsureFloatingExtendedStyles(config);
+                TopMost = topMost;
+            }
             else
                 TopMost = topMost;
 
@@ -735,6 +978,8 @@ namespace HimpqEnhanced
                 SetWindowPos(Handle, zOrder, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
                 ConfigureTopMostKeeper(config);
             }
+
+            ConfigureShellSurfaceMonitor(config);
         }
 
         private void EnsureFloatingExtendedStyles(HimpqConfigData config)
@@ -834,17 +1079,33 @@ namespace HimpqEnhanced
             if (hWnd == HWND_NOTOPMOST) return "NOTOPMOST";
             if (hWnd == HWND_BOTTOM) return "BOTTOM";
 
-            var className = new StringBuilder(256);
-            var title = new StringBuilder(Math.Max(2, GetWindowTextLength(hWnd) + 1));
-            GetClassName(hWnd, className, className.Capacity);
-            GetWindowText(hWnd, title, title.Capacity);
+            string className = GetWindowClassNameText(hWnd);
+            string title = GetWindowTitleText(hWnd);
 
             string result = "0x" + hWnd.ToInt64().ToString("X");
-            if (className.Length > 0)
+            if (!string.IsNullOrEmpty(className))
                 result += "/" + className;
-            if (title.Length > 0)
+            if (!string.IsNullOrEmpty(title))
                 result += ":" + title;
             return result;
+        }
+
+        private static string GetWindowClassNameText(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return "";
+
+            var className = new StringBuilder(256);
+            GetClassName(hWnd, className, className.Capacity);
+            return className.ToString();
+        }
+
+        private static string GetWindowTitleText(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero) return "";
+
+            var title = new StringBuilder(Math.Max(2, GetWindowTextLength(hWnd) + 1));
+            GetWindowText(hWnd, title, title.Capacity);
+            return title.ToString();
         }
 
         private bool IsFloatingClickThroughEnabled()
@@ -873,13 +1134,60 @@ namespace HimpqEnhanced
                 " managedVisible=" + Visible +
                 " cloaked=" + cloakedText +
                 " rect=" + rectText +
-                " topMost=" + TopMost);
+                " topMost=" + TopMost +
+                " nativeTopMost=" + HasFloatingTopMostStyle() +
+                " owner=" + DescribeWindow(_floatingOwnerTaskbar));
+        }
+
+        private void LogFloatingOwnerChanged(IntPtr taskbar)
+        {
+            if (HimpqConfig.Load().debug_mode != 1) return;
+            Logger.WriteLine("Himpq floating window: taskbar owner=" + DescribeWindow(taskbar));
+        }
+
+        private void LogEmbeddedWindowRestore(string shellSurface)
+        {
+            if (HimpqConfig.Load().debug_mode != 1) return;
+            Logger.WriteLine("Himpq taskbar window: restored after shell surface=" + shellSurface + " foreground=" + DescribeWindow(GetForegroundWindow()));
+        }
+
+        private void LogFloatingWindowRestore(string shellSurface)
+        {
+            if (!IsHandleCreated) return;
+
+            int cloaked = -1;
+            int cloakedHr = DwmGetWindowAttribute(Handle, DWMWA_CLOAKED, out cloaked, sizeof(int));
+            bool hasRect = GetWindowRect(Handle, out RECT rect);
+            string rectText = hasRect
+                ? rect.Left + "," + rect.Top + "," + rect.Right + "," + rect.Bottom
+                : "unavailable";
+            string cloakedText = cloakedHr == 0
+                ? cloaked.ToString()
+                : "hr=0x" + cloakedHr.ToString("X8");
+
+            Logger.WriteLine(
+                "Himpq floating window: restored after shell surface=" + shellSurface +
+                " nativeVisible=" + IsWindowVisible(Handle) +
+                " managedVisible=" + Visible +
+                " cloaked=" + cloakedText +
+                " rect=" + rectText +
+                " topMost=" + TopMost +
+                " nativeTopMost=" + HasFloatingTopMostStyle() +
+                " owner=" + DescribeWindow(_floatingOwnerTaskbar) +
+                " foreground=" + DescribeWindow(GetForegroundWindow()));
+        }
+
+        private bool HasFloatingTopMostStyle()
+        {
+            if (!IsHandleCreated) return false;
+            return (GetWindowLong(Handle, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
         }
 
         protected override void OnHandleDestroyed(EventArgs e)
         {
             LogFloatingWindowState("handle destroyed");
             _topMostKeeperTimer?.Stop();
+            _shellSurfaceMonitorTimer?.Stop();
             base.OnHandleDestroyed(e);
         }
 
@@ -1069,6 +1377,8 @@ namespace HimpqEnhanced
             _updateTimer?.Dispose();
             _topMostKeeperTimer?.Stop();
             _topMostKeeperTimer?.Dispose();
+            _shellSurfaceMonitorTimer?.Stop();
+            _shellSurfaceMonitorTimer?.Dispose();
             ClearSensorFlags();
             _displayFont?.Dispose();
             _labelBrush.Dispose();

@@ -2,6 +2,9 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Unicode;
 using System.Drawing;
+using System.Reflection;
+using System.Text;
+using GHelper;
 
 namespace HimpqEnhanced
 {
@@ -48,10 +51,24 @@ namespace HimpqEnhanced
         public List<TaskbarItemConfig> taskbar_items { get; set; } = new();
     }
 
+    public class HimpqConfigExportData
+    {
+        public int format_version { get; set; } = 1;
+        public string app_version { get; set; } = "";
+        public string exported_at { get; set; } = "";
+        public HimpqConfigData? himpq_config { get; set; }
+        public Dictionary<string, string>? power_schemes { get; set; }
+    }
+
     public static class HimpqConfig
     {
         private static readonly string configDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GHelper");
         private static readonly string configFile = Path.Combine(configDir, "himpqenhanced.json");
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            WriteIndented = true,
+            Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
+        };
 
         public static HimpqConfigData Load()
         {
@@ -81,16 +98,95 @@ namespace HimpqEnhanced
         {
             try
             {
-                Directory.CreateDirectory(configDir);
-                var options = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
-                };
-                string json = JsonSerializer.Serialize(data, options);
-                File.WriteAllText(configFile, json);
+                SaveStrict(data);
             }
             catch { }
+        }
+
+        public static void SaveStrict(HimpqConfigData data)
+        {
+            Directory.CreateDirectory(configDir);
+            string json = JsonSerializer.Serialize(data, JsonOptions);
+            File.WriteAllText(configFile, json, new UTF8Encoding(false));
+        }
+
+        public static HimpqConfigExportData CreateExportSnapshot()
+        {
+            var schemes = new Dictionary<string, string>();
+            foreach (int mode in new[] { 0, 1, 2 })
+            {
+                string value = AppConfig.GetString("scheme_" + mode);
+                if (!string.IsNullOrWhiteSpace(value))
+                    schemes[mode.ToString()] = value;
+            }
+
+            return new HimpqConfigExportData
+            {
+                app_version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "",
+                exported_at = DateTimeOffset.Now.ToString("O"),
+                himpq_config = Load(),
+                power_schemes = schemes
+            };
+        }
+
+        public static void Export(string path)
+        {
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            string json = JsonSerializer.Serialize(CreateExportSnapshot(), JsonOptions);
+            File.WriteAllText(path, json, new UTF8Encoding(false));
+        }
+
+        public static HimpqConfigExportData ReadExport(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException("Import path is empty.", nameof(path));
+
+            string json = File.ReadAllText(path, new UTF8Encoding(false, true));
+            var data = JsonSerializer.Deserialize<HimpqConfigExportData>(json)
+                ?? throw new InvalidDataException("Import file is not a valid Himpq config export.");
+
+            ValidateExport(data);
+            return data;
+        }
+
+        public static void Import(string path)
+        {
+            var data = ReadExport(path);
+            SaveStrict(data.himpq_config!);
+            ApplyPowerSchemes(data.power_schemes!);
+        }
+
+        private static void ValidateExport(HimpqConfigExportData data)
+        {
+            if (data.format_version != 1)
+                throw new InvalidDataException($"Unsupported Himpq config export version: {data.format_version}.");
+            if (data.himpq_config is null)
+                throw new InvalidDataException("Import file is missing himpq_config.");
+            if (data.himpq_config.taskbar_items is null)
+                throw new InvalidDataException("Import file is missing himpq_config.taskbar_items.");
+            if (data.power_schemes is null)
+                throw new InvalidDataException("Import file is missing power_schemes.");
+
+            foreach (string key in data.power_schemes.Keys)
+            {
+                if (key is not ("0" or "1" or "2"))
+                    throw new InvalidDataException("Import file contains an unknown power scheme key: " + key);
+            }
+        }
+
+        private static void ApplyPowerSchemes(Dictionary<string, string> schemes)
+        {
+            foreach (int mode in new[] { 0, 1, 2 })
+            {
+                string key = mode.ToString();
+                if (schemes.TryGetValue(key, out string? value) && !string.IsNullOrWhiteSpace(value))
+                    AppConfig.Set("scheme_" + mode, value.Trim());
+                else
+                    AppConfig.Remove("scheme_" + mode);
+            }
         }
 
         public static HimpqConfigData NewDefault()

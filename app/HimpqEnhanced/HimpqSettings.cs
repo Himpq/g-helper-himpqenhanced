@@ -10,6 +10,7 @@ namespace HimpqEnhanced
     {
         private const string SectionTitleTag = "SectionTitle";
         private const string ColorSwatchTag = "ColorSwatch";
+        private const int PowerCfgTimeoutMs = 3000;
         private CheckBox checkDebug;
         private CheckBox checkTaskbarEnabled;
         private CheckBox checkTaskbarFloating = null!;
@@ -47,6 +48,7 @@ namespace HimpqEnhanced
         private TextBox[] powerPlanCustom;
         private Label labelCurrent;
         private System.Windows.Forms.Timer refreshTimer;
+        private bool _refreshingActivePlan;
 
         private List<(string guid, string name)> allPowerPlans;
 
@@ -86,7 +88,7 @@ namespace HimpqEnhanced
             refreshTimer.Tick += (_, _) =>
             {
                 if (!Visible) return;
-                labelCurrent.Text = "当前电源计划: " + GetActivePlanName();
+                RefreshActivePlanLabelAsync();
             };
             refreshTimer.Start();
         }
@@ -111,24 +113,13 @@ namespace HimpqEnhanced
         private static List<(string guid, string name)> EnumeratePowerPlans()
         {
             var plans = new List<(string, string)>();
-            try
-            {
-                var proc = Process.Start(new ProcessStartInfo("powercfg", "/list")
-                {
-                    RedirectStandardOutput = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                });
-                if (proc != null)
-                {
-                    string output = proc.StandardOutput.ReadToEnd();
-                    proc.WaitForExit();
-                    var regex = new Regex(@"GUID:\s*([a-fA-F0-9\-]+)\s*\((.+)\)", RegexOptions.Multiline);
-                    foreach (Match m in regex.Matches(output))
-                        plans.Add((m.Groups[1].Value.Trim(), m.Groups[2].Value.Trim()));
-                }
-            }
-            catch { }
+            if (!TryRunPowerCfg("/list", out string output))
+                return plans;
+
+            var regex = new Regex(@"GUID:\s*([a-fA-F0-9\-]+)\s*\((.+)\)", RegexOptions.Multiline);
+            foreach (Match m in regex.Matches(output))
+                plans.Add((m.Groups[1].Value.Trim(), m.Groups[2].Value.Trim()));
+
             return plans;
         }
 
@@ -221,6 +212,33 @@ namespace HimpqEnhanced
             comboUnplugMode.SelectedIndexChanged += (_, _) => SaveHimpqConfig();
             Controls.Add(labelUnplugMode);
             Controls.Add(comboUnplugMode);
+            y += 50;
+
+            // 配置管理
+            var labelConfigManage = new Label
+            {
+                Text = "配置管理",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            var btnExport = new RButton
+            {
+                Text = "导出配置...",
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(118, 28)
+            };
+            btnExport.Click += (_, _) => ExportHimpqConfig();
+            var btnImport = new RButton
+            {
+                Text = "导入配置...",
+                Location = new Point(leftControl + 128, y + 2),
+                Size = new Size(118, 28)
+            };
+            btnImport.Click += (_, _) => ImportHimpqConfig();
+            Controls.Add(labelConfigManage);
+            Controls.Add(btnExport);
+            Controls.Add(btnImport);
             y += 60;
 
             // ── 各模式电源计划 ──
@@ -1041,31 +1059,104 @@ namespace HimpqEnhanced
 
         private string GetActivePlanName()
         {
+            if (!TryRunPowerCfg("/getactivescheme", out string output))
+                return "未知";
+
+            var match = Regex.Match(output, @"GUID:\s*([a-fA-F0-9\-]+)\s*\((.+)\)");
+            if (match.Success)
+            {
+                string guid = match.Groups[1].Value.Trim();
+                string name = match.Groups[2].Value.Trim();
+                foreach (var p in allPowerPlans)
+                    if (p.guid == guid) return p.name;
+                return name;
+            }
+
+            return "未知";
+        }
+
+        private void RefreshActivePlanLabelAsync()
+        {
+            if (_refreshingActivePlan) return;
+
+            _refreshingActivePlan = true;
+            Task.Run(GetActivePlanName).ContinueWith(task =>
+            {
+                if (IsDisposed || !IsHandleCreated)
+                {
+                    _refreshingActivePlan = false;
+                    return;
+                }
+
+                try
+                {
+                    BeginInvoke((Action)(() =>
+                    {
+                        try
+                        {
+                            if (!IsDisposed && labelCurrent is not null)
+                                labelCurrent.Text = "当前电源计划: " + (task.Status == TaskStatus.RanToCompletion ? task.Result : "未知");
+                        }
+                        finally
+                        {
+                            _refreshingActivePlan = false;
+                        }
+                    }));
+                }
+                catch (ObjectDisposedException)
+                {
+                    _refreshingActivePlan = false;
+                }
+                catch (InvalidOperationException)
+                {
+                    _refreshingActivePlan = false;
+                }
+            }, TaskScheduler.Default);
+        }
+
+        private static bool TryRunPowerCfg(string arguments, out string output)
+        {
+            output = "";
             try
             {
-                var proc = Process.Start(new ProcessStartInfo("powercfg", "/getactivescheme")
+                using var proc = Process.Start(new ProcessStartInfo("powercfg", arguments)
                 {
                     RedirectStandardOutput = true,
+                    RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
-                if (proc != null)
+
+                if (proc is null)
                 {
-                    string output = proc.StandardOutput.ReadToEnd();
-                    proc.WaitForExit();
-                    var match = Regex.Match(output, @"GUID:\s*([a-fA-F0-9\-]+)\s*\((.+)\)");
-                    if (match.Success)
-                    {
-                        string guid = match.Groups[1].Value.Trim();
-                        string name = match.Groups[2].Value.Trim();
-                        foreach (var p in allPowerPlans)
-                            if (p.guid == guid) return p.name;
-                        return name;
-                    }
+                    Logger.WriteLine("Himpq settings: powercfg " + arguments + " failed to start.");
+                    return false;
                 }
+
+                if (!proc.WaitForExit(PowerCfgTimeoutMs))
+                {
+                    try { proc.Kill(entireProcessTree: true); }
+                    catch (Exception killEx) { Logger.WriteLine("Himpq settings: failed to kill timed out powercfg " + arguments + ": " + killEx.Message); }
+
+                    Logger.WriteLine("Himpq settings: powercfg " + arguments + " timed out after " + PowerCfgTimeoutMs + "ms.");
+                    return false;
+                }
+
+                output = proc.StandardOutput.ReadToEnd();
+                string error = proc.StandardError.ReadToEnd();
+                if (proc.ExitCode != 0)
+                {
+                    Logger.WriteLine("Himpq settings: powercfg " + arguments + " exited with " + proc.ExitCode + ": " + error.Trim());
+                    return false;
+                }
+
+                return true;
             }
-            catch { }
-            return "未知";
+            catch (Exception ex)
+            {
+                Logger.WriteLine("Himpq settings: powercfg " + arguments + " failed: " + ex.Message);
+                return false;
+            }
         }
 
         private static void SelectModeItem(RComboBox combo, int value)
@@ -1137,6 +1228,8 @@ namespace HimpqEnhanced
         {
             if (_loading) return;
 
+            SavePowerPlanSelections();
+
             var data = HimpqConfig.Load();
             data.debug_mode = checkDebug.Checked ? 1 : 0;
             data.taskbar_window_enabled = checkTaskbarEnabled.Checked ? 1 : 0;
@@ -1160,6 +1253,147 @@ namespace HimpqEnhanced
             if (comboUnplugMode.SelectedItem is ModeItem unplugSelected)
                 data.unplug_performance_mode = unplugSelected.Value;
             HimpqConfig.Save(data);
+        }
+
+        private void SavePowerPlanSelections()
+        {
+            if (powerPlanCombos is null || powerPlanCustom is null)
+                throw new InvalidOperationException("Himpq power plan controls are not initialized.");
+            if (powerPlanCombos.Length != modes.Length || powerPlanCustom.Length != modes.Length)
+                throw new InvalidOperationException("Himpq power plan controls do not match mode count.");
+
+            for (int i = 0; i < modes.Length; i++)
+            {
+                string key = "scheme_" + modes[i].mode;
+                if (powerPlanCombos[i].SelectedItem is not PowerPlanItem item)
+                    continue;
+
+                if (item.Guid == "CUSTOM")
+                {
+                    string guid = powerPlanCustom[i].Text.Trim();
+                    if (!string.IsNullOrWhiteSpace(guid))
+                        AppConfig.Set(key, guid);
+                    else
+                        AppConfig.Remove(key);
+                }
+                else if (!string.IsNullOrWhiteSpace(item.Guid))
+                {
+                    AppConfig.Set(key, item.Guid);
+                }
+                else
+                {
+                    AppConfig.Remove(key);
+                }
+            }
+        }
+
+        private void ExportHimpqConfig()
+        {
+            using var dialog = new SaveFileDialog
+            {
+                Title = "导出 Himpq 配置",
+                Filter = "Himpq 配置 (*.json)|*.json",
+                FileName = $"himpqenhanced-{DateTime.Now:yyyyMMdd-HHmmss}.json",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                AddExtension = true,
+                DefaultExt = "json",
+                OverwritePrompt = true,
+                RestoreDirectory = true
+            };
+
+            Logger.WriteLine("Himpq config export: opening save dialog.");
+            DialogResult result;
+            try
+            {
+                result = dialog.ShowDialog(this);
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteLine("Himpq config export dialog failed: " + ex.Message);
+                MessageBox.Show(this, "打开导出窗口失败：" + ex.Message, "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            Logger.WriteLine("Himpq config export: save dialog result=" + result);
+            if (result != DialogResult.OK) return;
+
+            try
+            {
+                Logger.WriteLine("Himpq config export: saving current settings.");
+                SaveHimpqConfig();
+                Logger.WriteLine("Himpq config export: writing file " + dialog.FileName);
+                HimpqConfig.Export(dialog.FileName);
+                Logger.WriteLine("Himpq config exported: " + dialog.FileName);
+                MessageBox.Show(this, "配置已导出。", "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteLine("Himpq config export failed: " + ex.Message);
+                MessageBox.Show(this, "导出配置失败：" + ex.Message, "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ImportHimpqConfig()
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = "导入 Himpq 配置",
+                Filter = "Himpq 配置 (*.json)|*.json",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                CheckFileExists = true,
+                Multiselect = false,
+                RestoreDirectory = true
+            };
+
+            Logger.WriteLine("Himpq config import: opening open dialog.");
+            DialogResult result;
+            try
+            {
+                result = dialog.ShowDialog(this);
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteLine("Himpq config import dialog failed: " + ex.Message);
+                MessageBox.Show(this, "打开导入窗口失败：" + ex.Message, "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            Logger.WriteLine("Himpq config import: open dialog result=" + result);
+            if (result != DialogResult.OK) return;
+
+            DialogResult confirm = MessageBox.Show(
+                this,
+                "导入配置会覆盖当前 Himpq 设置和各模式电源计划覆盖项。是否继续？",
+                "Himpq 设置",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes) return;
+
+            try
+            {
+                Logger.WriteLine("Himpq config import: reading file " + dialog.FileName);
+                HimpqConfig.Import(dialog.FileName);
+                ReloadHimpqConfig();
+                Logger.WriteLine("Himpq config imported: " + dialog.FileName);
+                MessageBox.Show(this, "配置已导入。", "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteLine("Himpq config import failed: " + ex.Message);
+                MessageBox.Show(this, "导入配置失败：" + ex.Message, "Himpq 设置", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ReloadHimpqConfig()
+        {
+            bool wasLoading = _loading;
+            _loading = true;
+            LoadConfig();
+            _loading = wasLoading;
+
+            UpdateTaskbarColorSwatches();
+            UpdateTaskbarModeControls();
+            Main.RestartTaskbarWindow();
         }
 
         private void ApplyTaskbarState()
