@@ -44,6 +44,7 @@ namespace GHelper
         public static InputDispatcher? inputDispatcher;
 
         // The main entry point for the application
+        [STAThread]
         public static void Main(string[] args)
         {
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
