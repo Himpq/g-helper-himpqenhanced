@@ -372,6 +372,8 @@ namespace HimpqEnhanced
 
             _topMostKeeperSuspended = true;
             _topMostKeeperTimer?.Stop();
+            _shellSurfaceMonitorTimer?.Stop();
+            _updateTimer?.Stop();
         }
 
         public void ResumeTopMostKeeper()
@@ -390,6 +392,13 @@ namespace HimpqEnhanced
                 _topMostKeeperTimer ??= CreateTopMostKeeperTimer();
                 if (!_topMostKeeperTimer.Enabled)
                     _topMostKeeperTimer.Start();
+            }
+            if (!IsFloatingMode || config.taskbar_window_enabled == 1)
+            {
+                _updateTimer ??= new System.Windows.Forms.Timer { Interval = GetRefreshInterval(config) };
+                if (!_updateTimer.Enabled)
+                    _updateTimer.Start();
+                ConfigureShellSurfaceMonitor(config);
             }
         }
 
