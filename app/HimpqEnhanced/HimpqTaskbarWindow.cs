@@ -1000,6 +1000,14 @@ namespace HimpqEnhanced
             int absoluteX = screen.Bounds.Left + x;
             int absoluteY = screen.Bounds.Top + y;
 
+            // One shared offset can't fit every screen, so clamp it into the target
+            // display. Without this a value tuned on a tall primary screen pushes the
+            // window off a shorter secondary one and nothing appears there.
+            int maxX = Math.Max(screen.Bounds.Left, screen.Bounds.Right - targetW);
+            int maxY = Math.Max(screen.Bounds.Top, screen.Bounds.Bottom - targetH);
+            absoluteX = Math.Clamp(absoluteX, screen.Bounds.Left, maxX);
+            absoluteY = Math.Clamp(absoluteY, screen.Bounds.Top, maxY);
+
             EnsureFloatingTaskbarOwner();
             IntPtr zOrder = config.taskbar_floating_topmost == 1 ? HWND_TOPMOST : HWND_NOTOPMOST;
             SetWindowPos(Handle, zOrder, absoluteX, absoluteY, targetW, targetH, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
@@ -1194,10 +1202,11 @@ namespace HimpqEnhanced
             bool windowOnTarget = false;
             if (GetWindowRect(Handle, out RECT rect))
             {
+                // Compare by screen identity rather than strict containment: a clamped
+                // window can legitimately stick out of the bounds on a small display.
                 Rectangle windowBounds = Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
                 Screen current = Screen.FromRectangle(windowBounds);
-                windowOnTarget = target.Bounds.Contains(windowBounds) &&
-                    string.Equals(current.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase);
+                windowOnTarget = string.Equals(current.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase);
             }
 
             if (!windowOnTarget)
