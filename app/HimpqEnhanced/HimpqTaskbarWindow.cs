@@ -3,6 +3,7 @@ using System.Drawing.Text;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Forms;
 using GHelper;
 using GHelper.Mode;
 using GHelper.UI;
@@ -32,6 +33,7 @@ namespace HimpqEnhanced
         private const int WM_ACTIVATE = 0x0006;
         private const int WM_MOUSEACTIVATE = 0x0021;
         private const int WM_NCACTIVATE = 0x0086;
+        private const int WM_DISPLAYCHANGE = 0x007E;
         private const int HTTRANSPARENT = -1;
         private const int MA_NOACTIVATE = 3;
         private const int GWLP_HWNDPARENT = -8;
@@ -964,39 +966,60 @@ namespace HimpqEnhanced
 
         private Point CalculateDefaultFloatingPosition(HimpqConfigData config, int targetW, int targetH)
         {
-            IntPtr taskbar = GetTaskbarHandle();
-            if (taskbar == IntPtr.Zero || !GetWindowRect(taskbar, out RECT tr))
-            {
-                Logger.WriteLine("Himpq floating window: taskbar handle not found for initial position");
-                return new Point(config.taskbar_floating_x, config.taskbar_floating_y);
-            }
-
+            Screen screen = GetTargetDisplay(config);
+            Rectangle bounds = screen.Bounds;
+            Rectangle workArea = screen.WorkingArea;
             bool left = config.taskbar_window_position != "right";
-            int offset = config.taskbar_window_offset;
             int x;
+            int y;
+            int topTaskbarH = Math.Max(0, workArea.Top - bounds.Top);
+            int bottomTaskbarH = Math.Max(0, bounds.Bottom - workArea.Bottom);
+            int leftTaskbarW = Math.Max(0, workArea.Left - bounds.Left);
+            int rightTaskbarW = Math.Max(0, bounds.Right - workArea.Right);
+            int edgeGap = DpiScale(2);
 
-            if (_isWin11 && !left)
+            if (bottomTaskbarH > 0)
             {
-                IntPtr notify = _hNotify != IntPtr.Zero ? _hNotify : FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
-                if (notify != IntPtr.Zero && GetWindowRect(notify, out RECT nr))
-                    x = Math.Max(tr.Left + DpiScale(2), nr.Left - targetW - DpiScale(2));
-                else
-                    x = tr.Right - targetW - DpiScale(2);
+                x = left ? workArea.Left + _padding : workArea.Right - targetW - edgeGap;
+                y = workArea.Bottom + Math.Max(0, (bottomTaskbarH - targetH) / 2);
             }
-            else if (!left)
+            else if (topTaskbarH > 0)
             {
-                x = tr.Right - targetW - DpiScale(2);
+                x = left ? workArea.Left + _padding : workArea.Right - targetW - edgeGap;
+                y = bounds.Top + Math.Max(0, (topTaskbarH - targetH) / 2);
+            }
+            else if (leftTaskbarW > 0)
+            {
+                x = bounds.Left + Math.Max(0, (leftTaskbarW - targetW) / 2);
+                y = left ? workArea.Top + _padding : workArea.Bottom - targetH - edgeGap;
+            }
+            else if (rightTaskbarW > 0)
+            {
+                x = workArea.Right + Math.Max(0, (rightTaskbarW - targetW) / 2);
+                y = left ? workArea.Top + _padding : workArea.Bottom - targetH - edgeGap;
             }
             else
             {
-                x = tr.Left + _padding;
+                x = left ? workArea.Left + _padding : workArea.Right - targetW - edgeGap;
+                y = workArea.Bottom - targetH - edgeGap;
             }
 
-            x += offset;
-
-            int taskbarH = tr.Bottom - tr.Top;
-            int y = tr.Top + Math.Max(0, (taskbarH - targetH) / 2);
+            x += config.taskbar_window_offset;
+            x = Math.Clamp(x, bounds.Left, Math.Max(bounds.Left, bounds.Right - targetW));
+            y = Math.Clamp(y, bounds.Top, Math.Max(bounds.Top, bounds.Bottom - targetH));
             return new Point(x, y);
+        }
+
+        private static Screen GetTargetDisplay(HimpqConfigData config)
+        {
+            Screen[] screens = Screen.AllScreens;
+            if (screens.Length == 0)
+                return Screen.PrimaryScreen ?? throw new InvalidOperationException("No display is available.");
+
+            return screens.FirstOrDefault(screen =>
+                    string.Equals(screen.DeviceName, config.taskbar_display_device_name, StringComparison.OrdinalIgnoreCase))
+                ?? Screen.PrimaryScreen
+                ?? screens[0];
         }
 
         private void ApplyWindowOptions(HimpqConfigData config)
@@ -1092,6 +1115,9 @@ namespace HimpqEnhanced
                 Logger.WriteLine("Himpq floating window: WM_NCACTIVATE active=" + m.WParam);
             }
 
+            if (m.Msg == WM_DISPLAYCHANGE && IsFloatingMode && IsHandleCreated && !IsDisposed)
+                BeginInvoke((Action)HandleDisplayConfigurationChanged);
+
             base.WndProc(ref m);
         }
 
@@ -1099,6 +1125,31 @@ namespace HimpqEnhanced
         {
             if (_topMostKeeperSuspended || !IsFloatingMode || !IsHandleCreated) return false;
             return HimpqConfig.Load().taskbar_floating_topmost == 1;
+        }
+
+        private void HandleDisplayConfigurationChanged()
+        {
+            if (!IsFloatingMode || IsDisposed || !IsHandleCreated) return;
+
+            var config = HimpqConfig.Load();
+            Screen target = GetTargetDisplay(config);
+            bool windowOnTarget = false;
+            if (GetWindowRect(Handle, out RECT rect))
+            {
+                Rectangle windowBounds = Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+                Screen current = Screen.FromRectangle(windowBounds);
+                windowOnTarget = target.Bounds.Contains(windowBounds) &&
+                    string.Equals(current.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (!windowOnTarget)
+            {
+                config.taskbar_floating_position_initialized = 0;
+                HimpqConfig.Save(config);
+            }
+
+            _layoutDirty = true;
+            UpdateData();
         }
 
         private void LogWindowPosChange(string phase, IntPtr insertAfter, uint flags)

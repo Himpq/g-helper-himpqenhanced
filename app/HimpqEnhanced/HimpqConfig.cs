@@ -24,6 +24,7 @@ namespace HimpqEnhanced
         public int debug_mode { get; set; } = 0;
         public int taskbar_window_enabled { get; set; } = 0;
         public int taskbar_window_floating_enabled { get; set; } = 0;
+        public string taskbar_display_device_name { get; set; } = "";
         public string taskbar_window_position { get; set; } = "left";
         public string taskbar_window_template { get; set; } = "";
         public int font_size { get; set; } = 8;

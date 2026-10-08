@@ -17,6 +17,7 @@ namespace HimpqEnhanced
         private RComboBox comboDefaultMode;
         private RComboBox comboUnplugMode;
         private RComboBox comboTaskbarPosition;
+        private RComboBox comboTaskbarDisplay = null!;
         private bool _loading;
 
         private RNumericUpDown numFontSize;
@@ -409,6 +410,49 @@ namespace HimpqEnhanced
             Controls.Add(labelFloating);
             Controls.Add(checkTaskbarFloating);
             y += 50;
+
+            var labelTaskbarDisplay = new Label
+            {
+                Text = "目标显示器",
+                Location = new Point(leftLabel, y),
+                Size = new Size(180, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            comboTaskbarDisplay = new RComboBox
+            {
+                NativeHeight = true,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(leftControl, y + 2),
+                Size = new Size(360, 26)
+            };
+            comboTaskbarDisplay.SelectedIndexChanged += (_, _) =>
+            {
+                if (_loading || comboTaskbarDisplay.SelectedItem is not TaskbarDisplayChoice choice) return;
+
+                var config = HimpqConfig.Load();
+                if (string.Equals(config.taskbar_display_device_name, choice.DeviceName, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                config.taskbar_display_device_name = choice.DeviceName;
+                config.taskbar_floating_position_initialized = 0;
+                HimpqConfig.Save(config);
+
+                bool selectedDisplayIsSecondary = Screen.AllScreens.Any(screen =>
+                    string.Equals(screen.DeviceName, choice.DeviceName, StringComparison.OrdinalIgnoreCase) &&
+                    !screen.Primary);
+                if (!checkTaskbarFloating.Checked && selectedDisplayIsSecondary)
+                    checkTaskbarFloating.Checked = true;
+
+                if (checkTaskbarFloating.Checked)
+                {
+                    Main.RefreshTaskbarPosition();
+                    BeginInvoke((Action)RefreshFloatingPositionControls);
+                }
+            };
+            RefreshTaskbarDisplayChoices(HimpqConfig.Load().taskbar_display_device_name);
+            Controls.Add(labelTaskbarDisplay);
+            Controls.Add(comboTaskbarDisplay);
+            y += 48;
 
             // 位置
             var labelPos = new Label
@@ -961,6 +1005,8 @@ namespace HimpqEnhanced
             y += rowGap;
             PlaceTaskbarRow("显示形式", checkTaskbarFloating, y, labelX, controlX, labelW, checkboxW, controlH);
             y += rowGap;
+            PlaceTaskbarRow("目标显示器", comboTaskbarDisplay, y, labelX, controlX, labelW, controlW + 140, controlH);
+            y += rowGap;
             PlaceTaskbarRow("任务栏位置", comboTaskbarPosition, y, labelX, controlX, labelW, controlW, controlH);
             y += rowGap;
             PlaceTaskbarRow("任务栏水平偏移", numOffset, y, labelX, controlX, labelW, controlW, controlH);
@@ -1012,6 +1058,82 @@ namespace HimpqEnhanced
             control.Size = new Size(controlW, controlH);
         }
 
+        private sealed class TaskbarDisplayChoice
+        {
+            public string DeviceName { get; }
+            private string Label { get; }
+
+            public TaskbarDisplayChoice(string deviceName, string label)
+            {
+                DeviceName = deviceName;
+                Label = label;
+            }
+
+            public override string ToString() => Label;
+        }
+
+        private void RefreshTaskbarDisplayChoices(string? savedDeviceName)
+        {
+            if (comboTaskbarDisplay is null) return;
+
+            bool wasLoading = _loading;
+            _loading = true;
+            comboTaskbarDisplay.BeginUpdate();
+            try
+            {
+                comboTaskbarDisplay.Items.Clear();
+                var screens = Screen.AllScreens
+                    .OrderByDescending(screen => screen.Primary)
+                    .ThenBy(screen => screen.DeviceName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var choices = new List<TaskbarDisplayChoice>();
+
+                if (!string.IsNullOrWhiteSpace(savedDeviceName) &&
+                    !screens.Any(screen => string.Equals(screen.DeviceName, savedDeviceName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    choices.Add(new TaskbarDisplayChoice(
+                        savedDeviceName,
+                        "已保存的显示器暂不可用（" + savedDeviceName + "），当前会回退到主显示器"));
+                }
+
+                for (int i = 0; i < screens.Length; i++)
+                {
+                    var screen = screens[i];
+                    string label = "显示器 " + (i + 1) +
+                        (screen.Primary ? "（主显示器）" : "") +
+                        "  " + screen.Bounds.Width + " × " + screen.Bounds.Height +
+                        "  " + screen.DeviceName;
+                    choices.Add(new TaskbarDisplayChoice(screen.DeviceName, label));
+                }
+
+                foreach (var choice in choices)
+                    comboTaskbarDisplay.Items.Add(choice);
+
+                var selected = choices.FirstOrDefault(choice =>
+                    string.Equals(choice.DeviceName, savedDeviceName, StringComparison.OrdinalIgnoreCase));
+                if (selected is null)
+                {
+                    string? primaryDeviceName = Screen.PrimaryScreen?.DeviceName;
+                    selected = choices.FirstOrDefault(choice =>
+                        string.Equals(choice.DeviceName, primaryDeviceName, StringComparison.OrdinalIgnoreCase))
+                        ?? choices.FirstOrDefault();
+                }
+                comboTaskbarDisplay.SelectedItem = selected;
+            }
+            finally
+            {
+                comboTaskbarDisplay.EndUpdate();
+                _loading = wasLoading;
+            }
+        }
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            if (Visible && comboTaskbarDisplay is not null)
+                RefreshTaskbarDisplayChoices(HimpqConfig.Load().taskbar_display_device_name);
+        }
+
         private void UpdateTaskbarModeControls()
         {
             if (checkTaskbarFloating is null) return;
@@ -1019,6 +1141,7 @@ namespace HimpqEnhanced
             bool floating = checkTaskbarFloating.Checked;
             comboTaskbarPosition.Enabled = !floating;
             numOffset.Enabled = !floating;
+            comboTaskbarDisplay.Enabled = true;
             numFloatingX.Enabled = floating;
             numFloatingY.Enabled = floating;
             checkFloatingClickThrough.Enabled = floating;
@@ -1180,6 +1303,7 @@ namespace HimpqEnhanced
             checkDebug.Checked = data.debug_mode == 1;
             checkTaskbarEnabled.Checked = data.taskbar_window_enabled == 1;
             checkTaskbarFloating.Checked = data.taskbar_window_floating_enabled == 1;
+            RefreshTaskbarDisplayChoices(data.taskbar_display_device_name);
             comboTaskbarPosition.SelectedIndex = data.taskbar_window_position == "right" ? 1 : 0;
             numFontSize.Value = data.font_size > 0 ? data.font_size : 8;
             numOffset.Value = data.taskbar_window_offset;

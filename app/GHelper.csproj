@@ -20,8 +20,8 @@
     <IntermediateOutputPath>obj\x64\$(Configuration)\</IntermediateOutputPath>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
     <AssemblyVersion>0.272.1</AssemblyVersion>
-    <Version>0.272.1-8he</Version>
-    <InformationalVersion>0.272.1-8he</InformationalVersion>
+    <Version>0.272.1-9he</Version>
+    <InformationalVersion>0.272.1-9he</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>
