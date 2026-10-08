@@ -211,10 +211,23 @@ namespace HimpqEnhanced
         private IntPtr _floatingOwnerTaskbar;
         public bool IsFloatingMode { get; }
 
-        public HimpqTaskbarWindow()
+        // Which monitor this instance renders on. Empty means "follow the config
+        // default" (single-window mode); a device name pins the window to that screen
+        // when several instances are created for the multi-display mode.
+        private readonly string _targetDeviceName;
+
+        // The screen this instance is pinned to, or "" when it follows the config default.
+        public string TargetDeviceName => _targetDeviceName;
+
+        // Serialises config read-modify-write cycles across instances, so two windows
+        // reacting to the same event can't overwrite each other's saved state.
+        internal static readonly object ConfigLock = new();
+
+        public HimpqTaskbarWindow(string? targetDeviceName = null)
         {
             var config = HimpqConfig.Load();
             IsFloatingMode = config.taskbar_window_floating_enabled == 1;
+            _targetDeviceName = targetDeviceName ?? "";
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -891,6 +904,17 @@ namespace HimpqEnhanced
 
         private void ClearSensorFlags()
         {
+            // Another taskbar window may still be reading these sensors. Only release the
+            // shared flags once no sibling instance is left, otherwise the remaining
+            // window would show "--" for every value.
+            if (Main.HasAnyTaskbarWindow(this))
+            {
+                _readPower = false;
+                _readBatteryState = false;
+                _readBatteryHealth = false;
+                return;
+            }
+
             HardwareControl.taskbarReadFans = false;
             HardwareControl.taskbarReadUsage = false;
             HardwareControl.taskbarReadMemory = false;
@@ -945,23 +969,54 @@ namespace HimpqEnhanced
 
         private void ApplyFloatingPosition(HimpqConfigData config, int targetW, int targetH)
         {
-            int x = config.taskbar_floating_x;
-            int y = config.taskbar_floating_y;
+            Screen screen = GetTargetDisplay(config);
 
-            if (config.taskbar_floating_position_initialized != 1)
+            // taskbar_floating_x/y are stored as an offset from the target screen's
+            // top-left corner, so the same values stay valid on every display. Legacy
+            // configs (state 1) hold absolute screen coordinates and are converted once.
+            int x;
+            int y;
+
+            if (config.taskbar_floating_position_initialized == 1)
+            {
+                Screen primary = Screen.PrimaryScreen ?? Screen.AllScreens[0];
+                x = config.taskbar_floating_x - primary.Bounds.Left;
+                y = config.taskbar_floating_y - primary.Bounds.Top;
+                SaveFloatingOffset(x, y);
+            }
+            else if (config.taskbar_floating_position_initialized != 2)
             {
                 Point defaultPoint = CalculateDefaultFloatingPosition(config, targetW, targetH);
-                x = defaultPoint.X;
-                y = defaultPoint.Y;
-                config.taskbar_floating_x = x;
-                config.taskbar_floating_y = y;
-                config.taskbar_floating_position_initialized = 1;
-                HimpqConfig.Save(config);
+                x = defaultPoint.X - screen.Bounds.Left;
+                y = defaultPoint.Y - screen.Bounds.Top;
+                SaveFloatingOffset(x, y);
             }
+            else
+            {
+                x = config.taskbar_floating_x;
+                y = config.taskbar_floating_y;
+            }
+
+            int absoluteX = screen.Bounds.Left + x;
+            int absoluteY = screen.Bounds.Top + y;
 
             EnsureFloatingTaskbarOwner();
             IntPtr zOrder = config.taskbar_floating_topmost == 1 ? HWND_TOPMOST : HWND_NOTOPMOST;
-            SetWindowPos(Handle, zOrder, x, y, targetW, targetH, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            SetWindowPos(Handle, zOrder, absoluteX, absoluteY, targetW, targetH, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
+
+        // Persists the relative floating offset. Reloads inside the lock because a
+        // sibling window may have written the config since this instance loaded it.
+        private static void SaveFloatingOffset(int x, int y)
+        {
+            lock (ConfigLock)
+            {
+                var latest = HimpqConfig.Load();
+                latest.taskbar_floating_x = x;
+                latest.taskbar_floating_y = y;
+                latest.taskbar_floating_position_initialized = 2;
+                HimpqConfig.Save(latest);
+            }
         }
 
         private Point CalculateDefaultFloatingPosition(HimpqConfigData config, int targetW, int targetH)
@@ -1010,14 +1065,17 @@ namespace HimpqEnhanced
             return new Point(x, y);
         }
 
-        private static Screen GetTargetDisplay(HimpqConfigData config)
+        private Screen GetTargetDisplay(HimpqConfigData config)
         {
             Screen[] screens = Screen.AllScreens;
             if (screens.Length == 0)
                 return Screen.PrimaryScreen ?? throw new InvalidOperationException("No display is available.");
 
+            // An explicitly pinned screen (multi-display mode) wins over the config value.
+            string name = _targetDeviceName.Length > 0 ? _targetDeviceName : config.taskbar_display_device_name;
+
             return screens.FirstOrDefault(screen =>
-                    string.Equals(screen.DeviceName, config.taskbar_display_device_name, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(screen.DeviceName, name, StringComparison.OrdinalIgnoreCase))
                 ?? Screen.PrimaryScreen
                 ?? screens[0];
         }
@@ -1144,8 +1202,14 @@ namespace HimpqEnhanced
 
             if (!windowOnTarget)
             {
-                config.taskbar_floating_position_initialized = 0;
-                HimpqConfig.Save(config);
+                // Reload under the shared lock so concurrent instances don't clobber
+                // each other's config writes.
+                lock (ConfigLock)
+                {
+                    var latest = HimpqConfig.Load();
+                    latest.taskbar_floating_position_initialized = 0;
+                    HimpqConfig.Save(latest);
+                }
             }
 
             _layoutDirty = true;

@@ -430,14 +430,17 @@ namespace HimpqEnhanced
                 if (_loading || comboTaskbarDisplay.SelectedItem is not TaskbarDisplayChoice choice) return;
 
                 var config = HimpqConfig.Load();
-                if (string.Equals(config.taskbar_display_device_name, choice.DeviceName, StringComparison.OrdinalIgnoreCase))
+                int allFlag = choice.AllDisplays ? 1 : 0;
+                if (string.Equals(config.taskbar_display_device_name, choice.DeviceName, StringComparison.OrdinalIgnoreCase) &&
+                    config.taskbar_display_all == allFlag)
                     return;
 
                 config.taskbar_display_device_name = choice.DeviceName;
+                config.taskbar_display_all = allFlag;
                 config.taskbar_floating_position_initialized = 0;
                 HimpqConfig.Save(config);
 
-                bool selectedDisplayIsSecondary = Screen.AllScreens.Any(screen =>
+                bool selectedDisplayIsSecondary = choice.AllDisplays || Screen.AllScreens.Any(screen =>
                     string.Equals(screen.DeviceName, choice.DeviceName, StringComparison.OrdinalIgnoreCase) &&
                     !screen.Primary);
                 if (!checkTaskbarFloating.Checked && selectedDisplayIsSecondary)
@@ -445,11 +448,12 @@ namespace HimpqEnhanced
 
                 if (checkTaskbarFloating.Checked)
                 {
-                    Main.RefreshTaskbarPosition();
+                    Main.RestartTaskbarWindow();
                     BeginInvoke((Action)RefreshFloatingPositionControls);
                 }
             };
-            RefreshTaskbarDisplayChoices(HimpqConfig.Load().taskbar_display_device_name);
+            var initialConfig = HimpqConfig.Load();
+            RefreshTaskbarDisplayChoices(initialConfig.taskbar_display_device_name, initialConfig.taskbar_display_all == 1);
             Controls.Add(labelTaskbarDisplay);
             Controls.Add(comboTaskbarDisplay);
             y += 48;
@@ -1061,18 +1065,20 @@ namespace HimpqEnhanced
         private sealed class TaskbarDisplayChoice
         {
             public string DeviceName { get; }
+            public bool AllDisplays { get; }
             private string Label { get; }
 
-            public TaskbarDisplayChoice(string deviceName, string label)
+            public TaskbarDisplayChoice(string deviceName, string label, bool allDisplays = false)
             {
                 DeviceName = deviceName;
                 Label = label;
+                AllDisplays = allDisplays;
             }
 
             public override string ToString() => Label;
         }
 
-        private void RefreshTaskbarDisplayChoices(string? savedDeviceName)
+        private void RefreshTaskbarDisplayChoices(string? savedDeviceName, bool allDisplays = false)
         {
             if (comboTaskbarDisplay is null) return;
 
@@ -1087,6 +1093,12 @@ namespace HimpqEnhanced
                     .ThenBy(screen => screen.DeviceName, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
                 var choices = new List<TaskbarDisplayChoice>();
+
+                if (screens.Length > 1)
+                    choices.Add(new TaskbarDisplayChoice(
+                        "",
+                        "所有显示器（每块屏各显示一份，共 " + screens.Length + " 块）",
+                        allDisplays: true));
 
                 if (!string.IsNullOrWhiteSpace(savedDeviceName) &&
                     !screens.Any(screen => string.Equals(screen.DeviceName, savedDeviceName, StringComparison.OrdinalIgnoreCase)))
@@ -1109,13 +1121,18 @@ namespace HimpqEnhanced
                 foreach (var choice in choices)
                     comboTaskbarDisplay.Items.Add(choice);
 
-                var selected = choices.FirstOrDefault(choice =>
-                    string.Equals(choice.DeviceName, savedDeviceName, StringComparison.OrdinalIgnoreCase));
+                var selected = allDisplays
+                    ? choices.FirstOrDefault(choice => choice.AllDisplays)
+                    : choices.FirstOrDefault(choice =>
+                        !choice.AllDisplays &&
+                        string.Equals(choice.DeviceName, savedDeviceName, StringComparison.OrdinalIgnoreCase));
                 if (selected is null)
                 {
                     string? primaryDeviceName = Screen.PrimaryScreen?.DeviceName;
                     selected = choices.FirstOrDefault(choice =>
+                        !choice.AllDisplays &&
                         string.Equals(choice.DeviceName, primaryDeviceName, StringComparison.OrdinalIgnoreCase))
+                        ?? choices.FirstOrDefault(choice => !choice.AllDisplays)
                         ?? choices.FirstOrDefault();
                 }
                 comboTaskbarDisplay.SelectedItem = selected;
@@ -1131,7 +1148,10 @@ namespace HimpqEnhanced
         {
             base.OnVisibleChanged(e);
             if (Visible && comboTaskbarDisplay is not null)
-                RefreshTaskbarDisplayChoices(HimpqConfig.Load().taskbar_display_device_name);
+            {
+                var config = HimpqConfig.Load();
+                RefreshTaskbarDisplayChoices(config.taskbar_display_device_name, config.taskbar_display_all == 1);
+            }
         }
 
         private void UpdateTaskbarModeControls()
@@ -1153,7 +1173,7 @@ namespace HimpqEnhanced
             if (numFloatingX is null || numFloatingY is null) return;
 
             var data = HimpqConfig.Load();
-            if (data.taskbar_floating_position_initialized != 1) return;
+            if (data.taskbar_floating_position_initialized != 2) return;
 
             bool wasLoading = _loading;
             _loading = true;
@@ -1303,7 +1323,7 @@ namespace HimpqEnhanced
             checkDebug.Checked = data.debug_mode == 1;
             checkTaskbarEnabled.Checked = data.taskbar_window_enabled == 1;
             checkTaskbarFloating.Checked = data.taskbar_window_floating_enabled == 1;
-            RefreshTaskbarDisplayChoices(data.taskbar_display_device_name);
+            RefreshTaskbarDisplayChoices(data.taskbar_display_device_name, data.taskbar_display_all == 1);
             comboTaskbarPosition.SelectedIndex = data.taskbar_window_position == "right" ? 1 : 0;
             numFontSize.Value = data.font_size > 0 ? data.font_size : 8;
             numOffset.Value = data.taskbar_window_offset;
@@ -1354,20 +1374,29 @@ namespace HimpqEnhanced
 
             SavePowerPlanSelections();
 
+            // The taskbar windows write the same config file from their own threads, so
+            // the read-modify-write cycle has to be serialised against them.
+            lock (HimpqTaskbarWindow.ConfigLock)
+                SaveHimpqConfigCore(saveFloatingPosition);
+        }
+
+        private void SaveHimpqConfigCore(bool saveFloatingPosition)
+        {
             var data = HimpqConfig.Load();
             data.debug_mode = checkDebug.Checked ? 1 : 0;
             data.taskbar_window_enabled = checkTaskbarEnabled.Checked ? 1 : 0;
             data.taskbar_window_floating_enabled = checkTaskbarFloating.Checked ? 1 : 0;
+            data.taskbar_display_all = (comboTaskbarDisplay.SelectedItem as TaskbarDisplayChoice)?.AllDisplays == true ? 1 : 0;
             data.taskbar_window_position = comboTaskbarPosition.SelectedIndex == 1 ? "right" : "left";
             data.font_size = (int)numFontSize.Value;
             data.taskbar_window_offset = (int)numOffset.Value;
             data.taskbar_floating_click_through = checkFloatingClickThrough.Checked ? 1 : 0;
             data.taskbar_floating_topmost = checkFloatingTopmost.Checked ? 1 : 0;
-            if (saveFloatingPosition || data.taskbar_floating_position_initialized == 1)
+            if (saveFloatingPosition || data.taskbar_floating_position_initialized == 2)
             {
                 data.taskbar_floating_x = (int)numFloatingX.Value;
                 data.taskbar_floating_y = (int)numFloatingY.Value;
-                data.taskbar_floating_position_initialized = 1;
+                data.taskbar_floating_position_initialized = 2;
             }
             data.inter_item_gap = (int)numInterItemGap.Value;
             data.row_gap = (int)numRowGap.Value;
