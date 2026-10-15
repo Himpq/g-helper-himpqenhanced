@@ -33,6 +33,7 @@ namespace GHelper
         public static ToastForm toast;
 
         public static HardwareOverlay? hardwareOverlay;
+        public static CrosshairOverlay? crosshairOverlay;
 
         public static IntPtr unRegPowerNotify, unRegPowerNotifyLid, unRegPowerNotifyEnergy, unRegSuspendResume;
         public static int WM_TASKBARCREATED = 0;
@@ -105,6 +106,8 @@ namespace GHelper
             toast = new ToastForm();
 
             hardwareOverlay = new HardwareOverlay();
+            crosshairOverlay = new CrosshairOverlay();
+            Application.ApplicationExit += (_, _) => crosshairOverlay?.Dispose();
 
             ProcessHelper.CheckAlreadyRunning();
             ProcessHelper.SetPriority();
@@ -237,6 +240,9 @@ namespace GHelper
 
             if (AppConfig.IsOverlay())
                 hardwareOverlay?.StartOverlay();
+
+            if (AppConfig.Is("crosshair"))
+                crosshairOverlay?.Start();
 
             Application.Run();
         }

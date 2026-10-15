@@ -339,6 +339,51 @@
   <data name="Color" xml:space="preserve">
     <value>Color</value>
   </data>
+  <data name="ExternalCrosshair" xml:space="preserve">
+    <value>External Crosshair</value>
+  </data>
+  <data name="ExternalCrosshairSettings" xml:space="preserve">
+    <value>External Crosshair Settings</value>
+  </data>
+  <data name="CrosshairEnabled" xml:space="preserve">
+    <value>Enabled</value>
+  </data>
+  <data name="CrosshairType" xml:space="preserve">
+    <value>Style</value>
+  </data>
+  <data name="CrosshairCross" xml:space="preserve">
+    <value>Cross</value>
+  </data>
+  <data name="CrosshairCircle" xml:space="preserve">
+    <value>Circle</value>
+  </data>
+  <data name="CrosshairCenterDot" xml:space="preserve">
+    <value>Show center dot</value>
+  </data>
+  <data name="CrosshairDisplay" xml:space="preserve">
+    <value>Target display</value>
+  </data>
+  <data name="CrosshairAllDisplaysCount" xml:space="preserve">
+    <value>All displays (one crosshair per display, {0} total)</value>
+  </data>
+  <data name="CrosshairDisplayChoice" xml:space="preserve">
+    <value>Display {0}{1}  {2} × {3}  {4}</value>
+  </data>
+  <data name="CrosshairPrimaryMarker" xml:space="preserve">
+    <value> (Primary)</value>
+  </data>
+  <data name="CrosshairDisplayUnavailable" xml:space="preserve">
+    <value>Saved display unavailable ({0})</value>
+  </data>
+  <data name="CrosshairColor" xml:space="preserve">
+    <value>Color</value>
+  </data>
+  <data name="CrosshairSize" xml:space="preserve">
+    <value>Size</value>
+  </data>
+  <data name="CrosshairSizeValue" xml:space="preserve">
+    <value>Size: {0} px</value>
+  </data>
   <data name="Contrast" xml:space="preserve">
     <value>Contrast</value>
   </data>

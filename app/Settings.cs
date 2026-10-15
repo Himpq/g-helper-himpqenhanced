@@ -23,6 +23,7 @@ namespace GHelper
         ContextMenuStrip contextMenuStrip = new CustomContextMenu();
         ToolStripMenuItem menuEco, menuStandard, menuUltimate, menuOptimized;
         HimpqEnhanced.HimpqSettings himpqSettings;
+        private RButton buttonCrosshair = null!;
 
         public GPUModeControl gpuControl;
         public AllyControl allyControl;
@@ -60,6 +61,7 @@ namespace GHelper
         {
 
             InitializeComponent();
+            InitializeCrosshairQuickToggle();
             InitTheme(true);
 
             gpuControl = new GPUModeControl(this);
@@ -927,6 +929,12 @@ namespace GHelper
             menuOverlayGameOnly.Enabled = AppConfig.IsOverlay();
             contextMenuStrip.Items.Add(menuOverlayGameOnly);
 
+            var menuCrosshair = new ToolStripMenuItem(CrosshairText.Get("ExternalCrosshair"));
+            menuCrosshair.Click += (sender, args) => ToggleCrosshair();
+            menuCrosshair.Margin = padding;
+            menuCrosshair.Checked = AppConfig.Is("crosshair");
+            contextMenuStrip.Items.Add(menuCrosshair);
+
             var quit = new ToolStripMenuItem(Properties.Strings.Quit);
             quit.Click += ButtonQuit_Click;
             quit.Margin = padding;
@@ -1722,6 +1730,64 @@ namespace GHelper
             SetContextMenu();
         }
 
+        public void ToggleCrosshair()
+        {
+            SetCrosshairEnabled(!AppConfig.Is("crosshair"));
+        }
+
+        public void SetCrosshairEnabled(bool enabled)
+        {
+            bool changed = AppConfig.Is("crosshair") != enabled;
+            if (changed)
+            {
+                AppConfig.Set("crosshair", enabled ? 1 : 0);
+                if (enabled)
+                    Program.crosshairOverlay?.Start();
+                else
+                    Program.crosshairOverlay?.Stop();
+
+                SetContextMenu();
+            }
+
+            buttonCrosshair.Activated = enabled;
+            if (himpqSettings is not null && !himpqSettings.IsDisposed)
+                himpqSettings.SyncCrosshairEnabled(enabled);
+        }
+
+        private void InitializeCrosshairQuickToggle()
+        {
+            tableScreen.SuspendLayout();
+            tableScreen.ColumnCount = 5;
+            tableScreen.ColumnStyles.Clear();
+            for (int i = 0; i < 5; i++)
+                tableScreen.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
+
+            tableScreen.SetCellPosition(buttonMiniled, new TableLayoutPanelCellPosition(4, 0));
+            tableScreen.SetCellPosition(buttonFHD, new TableLayoutPanelCellPosition(4, 0));
+            tableScreen.SetCellPosition(buttonHDRControl, new TableLayoutPanelCellPosition(4, 0));
+
+            buttonCrosshair = new RButton
+            {
+                Activated = AppConfig.Is("crosshair"),
+                BackColor = SystemColors.ControlLightLight,
+                BorderColor = colorStandard,
+                BorderRadius = 5,
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                Font = buttonScreenAuto.Font,
+                ForeColor = SystemColors.ControlText,
+                Name = "buttonCrosshair",
+                Secondary = false,
+                Text = CrosshairText.Get("ExternalCrosshair"),
+                TextAlign = ContentAlignment.MiddleCenter,
+                UseVisualStyleBackColor = false,
+                AccessibleName = CrosshairText.Get("ExternalCrosshair"),
+            };
+            buttonCrosshair.Click += (_, _) => ToggleCrosshair();
+            tableScreen.Controls.Add(buttonCrosshair, 3, 0);
+            tableScreen.ResumeLayout(true);
+        }
+
         public void ShowMode(int mode)
         {
             if (InvokeRequired)
@@ -1843,7 +1909,6 @@ namespace GHelper
                 menuOptimized.Visible = buttonOptimized.Visible = false;
                 buttonStopGPU.Visible = true;
                 tableGPU.ColumnCount = 3;
-                tableScreen.ColumnCount = 3;
             }
             else
             {
@@ -1854,7 +1919,6 @@ namespace GHelper
             {
                 menuUltimate.Visible = buttonUltimate.Visible = false;
                 tableGPU.ColumnCount = 3;
-                tableScreen.ColumnCount = 3;
             }
         }
 

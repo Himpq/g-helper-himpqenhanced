@@ -20,8 +20,8 @@
     <IntermediateOutputPath>obj\x64\$(Configuration)\</IntermediateOutputPath>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
     <AssemblyVersion>0.272.1</AssemblyVersion>
-    <Version>0.272.1-10he</Version>
-    <InformationalVersion>0.272.1-10he</InformationalVersion>
+    <Version>0.272.1-11he</Version>
+    <InformationalVersion>0.272.1-11he</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -93,6 +93,6 @@
 	</Target>
 
 	<Target Name="ZipSingleExe" AfterTargets="Publish" Condition="'$(GITHUB_ACTIONS)'!='true'">
-		<Exec Command="powershell -NoProfile -Command &quot;$exe = '$(PublishDir)GHelper.exe'; for ($i = 0; $i -lt 30; $i++) { try { [IO.File]::Open($exe, 'Open', 'Read', 'None').Close(); break } catch { Start-Sleep -Milliseconds 200 } }; Compress-Archive -Path $exe -DestinationPath '$(PublishDir)GHelper.zip' -Force&quot;" />
+		<Exec Command="powershell -NoProfile -Command &quot;$ErrorActionPreference = 'Stop'; $exe = '$(PublishDir)GHelper.exe'; for ($i = 0; $i -lt 30; $i++) { try { [IO.File]::Open($exe, 'Open', 'Read', 'None').Close(); break } catch { Start-Sleep -Milliseconds 200 } }; Add-Type -AssemblyName System.IO.Compression; $zip = '$(PublishDir)GHelper.zip'; $tempZip = $zip + '.' + $PID + '.tmp'; $source = [IO.File]::OpenRead($exe); try { $destination = [IO.File]::Open($tempZip, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); try { $archive = [IO.Compression.ZipArchive]::new($destination, [IO.Compression.ZipArchiveMode]::Create); try { $entry = $archive.CreateEntry([IO.Path]::GetFileName($exe)); $entryStream = $entry.Open(); try { $source.CopyTo($entryStream) } finally { $entryStream.Dispose() } } finally { $archive.Dispose() } } finally { $destination.Dispose() } } finally { $source.Dispose() }; if ([IO.File]::Exists($zip)) { [IO.File]::Replace($tempZip, $zip, [NullString]::Value) } else { [IO.File]::Move($tempZip, $zip) }&quot;" />
 	</Target>
 </Project>

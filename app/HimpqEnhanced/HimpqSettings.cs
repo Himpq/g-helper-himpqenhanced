@@ -1,7 +1,9 @@
 using GHelper;
 using GHelper.Mode;
+using GHelper.Overlay;
 using GHelper.UI;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace HimpqEnhanced
@@ -18,6 +20,21 @@ namespace HimpqEnhanced
         private RComboBox comboUnplugMode;
         private RComboBox comboTaskbarPosition;
         private RComboBox comboTaskbarDisplay = null!;
+        private Label separatorCrosshair = null!;
+        private Label titleCrosshair = null!;
+        private Label labelCrosshairEnabled = null!;
+        private Label labelCrosshairType = null!;
+        private Label labelCrosshairDisplay = null!;
+        private Label labelCrosshairSize = null!;
+        private Label labelCrosshairColor = null!;
+        private CheckBox checkCrosshairEnabled = null!;
+        private CheckBox checkCrosshairCenterDot = null!;
+        private RComboBox comboCrosshairType = null!;
+        private RComboBox comboCrosshairDisplay = null!;
+        private RTrackBar trackCrosshairSize = null!;
+        private Label labelCrosshairSizeValue = null!;
+        private Panel rowCrosshairColor = null!;
+        private Panel panelCrosshairColor = null!;
         private bool _loading;
 
         private RNumericUpDown numFontSize;
@@ -800,6 +817,170 @@ namespace HimpqEnhanced
             Controls.Add(rowTaskbarShadowColor);
             y += 64;
 
+            InitCrosshairControls();
+        }
+
+        private void InitCrosshairControls()
+        {
+            separatorCrosshair = new Label
+            {
+                Text = "────────────────────────────────────────────────────",
+                Location = new Point(20, 0),
+                Size = new Size(700, 16),
+                ForeColor = SystemColors.ControlDark
+            };
+            titleCrosshair = new Label
+            {
+                Text = CrosshairText.Get("ExternalCrosshairSettings"),
+                Location = new Point(20, 0),
+                Size = new Size(400, 30),
+                Font = new Font("Segoe UI", 10F, FontStyle.Bold),
+                Tag = SectionTitleTag,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            labelCrosshairEnabled = CreateCrosshairLabel("CrosshairEnabled");
+            checkCrosshairEnabled = new CheckBox
+            {
+                Text = CrosshairText.Get("ExternalCrosshair"),
+                Location = new Point(220, 0),
+                Size = new Size(360, 30)
+            };
+            checkCrosshairEnabled.CheckedChanged += (_, _) =>
+            {
+                if (_loading) return;
+                Program.settingsForm?.SetCrosshairEnabled(checkCrosshairEnabled.Checked);
+            };
+
+            labelCrosshairType = CreateCrosshairLabel("CrosshairType");
+            comboCrosshairType = new RComboBox
+            {
+                NativeHeight = true,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(220, 0),
+                Size = new Size(260, 34)
+            };
+            comboCrosshairType.Items.Add(CrosshairText.Get("CrosshairCross"));
+            comboCrosshairType.Items.Add(CrosshairText.Get("CrosshairCircle"));
+            comboCrosshairType.SelectedIndexChanged += (_, _) =>
+            {
+                if (_loading || comboCrosshairType.SelectedIndex < 0) return;
+                AppConfig.Set("crosshair_type", comboCrosshairType.SelectedIndex);
+                Program.crosshairOverlay?.UpdateSettings();
+            };
+
+            checkCrosshairCenterDot = new CheckBox
+            {
+                Text = CrosshairText.Get("CrosshairCenterDot"),
+                Location = new Point(220, 0),
+                Size = new Size(360, 30)
+            };
+            checkCrosshairCenterDot.CheckedChanged += (_, _) =>
+            {
+                if (_loading) return;
+                AppConfig.Set("crosshair_center_dot", checkCrosshairCenterDot.Checked ? 1 : 0);
+                Program.crosshairOverlay?.UpdateSettings();
+            };
+
+            labelCrosshairDisplay = CreateCrosshairLabel("CrosshairDisplay");
+            comboCrosshairDisplay = new RComboBox
+            {
+                NativeHeight = true,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Location = new Point(220, 0),
+                Size = new Size(360, 34)
+            };
+            comboCrosshairDisplay.SelectedIndexChanged += (_, _) =>
+            {
+                if (_loading || comboCrosshairDisplay.SelectedItem is not CrosshairDisplayChoice choice) return;
+                string savedDeviceName = AppConfig.GetString("crosshair_screen", "") ?? "";
+                if (string.Equals(savedDeviceName, choice.DeviceName, StringComparison.OrdinalIgnoreCase)) return;
+
+                AppConfig.Set("crosshair_screen", choice.DeviceName);
+                Program.crosshairOverlay?.RefreshScreens();
+            };
+
+            labelCrosshairSize = CreateCrosshairLabel("CrosshairSize");
+            trackCrosshairSize = new RTrackBar
+            {
+                Minimum = 8,
+                Maximum = 64,
+                TickFrequency = 8,
+                TickStyle = TickStyle.BottomRight,
+                Location = new Point(220, 0),
+                Size = new Size(270, 44),
+                AccessibleName = CrosshairText.Get("CrosshairSize")
+            };
+            trackCrosshairSize.ValueChanged += (_, _) =>
+            {
+                if (_loading) return;
+                AppConfig.Set("crosshair_size", trackCrosshairSize.Value);
+                UpdateCrosshairSizeLabel();
+                Program.crosshairOverlay?.UpdateSettings();
+            };
+            labelCrosshairSizeValue = new Label
+            {
+                AutoSize = false,
+                TextAlign = ContentAlignment.MiddleRight,
+                Location = new Point(500, 0),
+                Size = new Size(100, 34)
+            };
+
+            labelCrosshairColor = CreateCrosshairLabel("CrosshairColor");
+            rowCrosshairColor = CreateColorRow(out panelCrosshairColor, OpenCrosshairColorPicker, includeReset: false);
+            panelCrosshairColor.BackColor = CrosshairOverlay.GetConfiguredColor();
+
+            Controls.AddRange([
+                separatorCrosshair, titleCrosshair,
+                labelCrosshairEnabled, checkCrosshairEnabled,
+                labelCrosshairType, comboCrosshairType,
+                checkCrosshairCenterDot,
+                labelCrosshairDisplay, comboCrosshairDisplay,
+                labelCrosshairSize, trackCrosshairSize, labelCrosshairSizeValue,
+                labelCrosshairColor, rowCrosshairColor
+            ]);
+        }
+
+        private Label CreateCrosshairLabel(string resourceKey)
+        {
+            return new Label
+            {
+                Text = CrosshairText.Get(resourceKey),
+                Location = new Point(20, 0),
+                Size = new Size(170, 34),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+        }
+
+        private void OpenCrosshairColorPicker()
+        {
+            using var picker = new RColorPicker(CrosshairOverlay.GetConfiguredColor());
+            picker.ColorChanged += color =>
+            {
+                AppConfig.Set("crosshair_color", color.ToArgb());
+                panelCrosshairColor.BackColor = color;
+                Program.crosshairOverlay?.UpdateSettings();
+            };
+            picker.ShowDialog(this);
+        }
+
+        private void UpdateCrosshairSizeLabel()
+        {
+            labelCrosshairSizeValue.Text = string.Format(
+                CultureInfo.CurrentUICulture,
+                CrosshairText.Get("CrosshairSizeValue"),
+                trackCrosshairSize.Value);
+        }
+
+        private void LoadCrosshairConfig()
+        {
+            checkCrosshairEnabled.Checked = AppConfig.Is("crosshair");
+            comboCrosshairType.SelectedIndex = Math.Clamp(AppConfig.Get("crosshair_type", 0), 0, 1);
+            checkCrosshairCenterDot.Checked = AppConfig.Get("crosshair_center_dot", 1) != 0;
+            trackCrosshairSize.Value = CrosshairOverlay.GetConfiguredSize();
+            panelCrosshairColor.BackColor = CrosshairOverlay.GetConfiguredColor();
+            RefreshCrosshairDisplayChoices(AppConfig.GetString("crosshair_screen", "") ?? "");
+            UpdateCrosshairSizeLabel();
         }
 
         private Panel CreateColorRow(out Panel swatch, Action pickColor, bool includeReset)
@@ -1046,6 +1227,54 @@ namespace HimpqEnhanced
             PlaceTaskbarRow("阴影颜色", rowTaskbarShadowColor, y, labelX, controlX, labelW, controlW + 140, controlH);
             AutoScrollMinSize = new Size(0, y + controlH + 64);
             UpdateTaskbarModeControls();
+
+            ArrangeCrosshairSettingsControls();
+        }
+
+        private void ArrangeCrosshairSettingsControls()
+        {
+            const int labelX = 20;
+            const int controlX = 220;
+            const int labelW = 170;
+            const int controlH = 34;
+            const int rowGap = 46;
+
+            int y = rowTaskbarShadowColor.Bottom + 24;
+            separatorCrosshair.Location = new Point(labelX, y);
+            y += 22;
+            titleCrosshair.Location = new Point(labelX, y);
+            y += 52;
+
+            PlaceCrosshairRow(labelCrosshairEnabled, checkCrosshairEnabled, y, labelX, controlX, labelW, 360, controlH);
+            y += rowGap;
+            PlaceCrosshairRow(labelCrosshairType, comboCrosshairType, y, labelX, controlX, labelW, 300, controlH);
+            y += rowGap;
+            checkCrosshairCenterDot.Location = new Point(controlX, y);
+            checkCrosshairCenterDot.Size = new Size(360, controlH);
+            y += rowGap;
+            PlaceCrosshairRow(labelCrosshairDisplay, comboCrosshairDisplay, y, labelX, controlX, labelW, 360, controlH);
+            y += rowGap;
+            labelCrosshairSize.Location = new Point(labelX, y);
+            labelCrosshairSize.Size = new Size(labelW, controlH);
+            trackCrosshairSize.Location = new Point(controlX, y - 4);
+            trackCrosshairSize.Size = new Size(270, 44);
+            labelCrosshairSizeValue.Location = new Point(controlX + 280, y);
+            // Native TrackBar.AutoSize can make the slider taller at higher DPI.
+            // Place the color row below its actual bounds rather than a fixed row gap.
+            y = Math.Max(trackCrosshairSize.Bottom, labelCrosshairSizeValue.Bottom) + 12;
+            PlaceCrosshairRow(labelCrosshairColor, rowCrosshairColor, y, labelX, controlX, labelW, 360, controlH);
+
+            AutoScrollMinSize = new Size(0, y + controlH + 64);
+            Logger.WriteLine($"Crosshair settings layout: dpi={DeviceDpi}, slider={trackCrosshairSize.Bounds}, colorRow={rowCrosshairColor.Bounds}.");
+        }
+
+        private static void PlaceCrosshairRow(Label label, Control control, int y, int labelX, int controlX, int labelW, int controlW, int controlH)
+        {
+            label.Location = new Point(labelX, y);
+            label.Size = new Size(labelW, controlH);
+            label.TextAlign = ContentAlignment.MiddleLeft;
+            control.Location = new Point(controlX, y);
+            control.Size = new Size(controlW, controlH);
         }
 
         private void PlaceTaskbarRow(string labelText, Control control, int y, int labelX, int controlX, int labelW, int controlW, int controlH)
@@ -1144,6 +1373,95 @@ namespace HimpqEnhanced
             }
         }
 
+        private void RefreshCrosshairDisplayChoices(string savedDeviceName)
+        {
+            if (comboCrosshairDisplay is null) return;
+
+            bool wasLoading = _loading;
+            _loading = true;
+            comboCrosshairDisplay.BeginUpdate();
+            try
+            {
+                comboCrosshairDisplay.Items.Clear();
+                var screens = Screen.AllScreens
+                    .OrderByDescending(screen => screen.Primary)
+                    .ThenBy(screen => screen.DeviceName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var choices = new List<CrosshairDisplayChoice>();
+
+                if (screens.Length > 1)
+                {
+                    choices.Add(new CrosshairDisplayChoice(
+                        "",
+                        string.Format(CultureInfo.CurrentUICulture, CrosshairText.Get("CrosshairAllDisplaysCount"), screens.Length),
+                        allDisplays: true));
+                }
+
+                if (!string.IsNullOrWhiteSpace(savedDeviceName) &&
+                    !screens.Any(screen => string.Equals(screen.DeviceName, savedDeviceName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    choices.Add(new CrosshairDisplayChoice(
+                        savedDeviceName,
+                        string.Format(CultureInfo.CurrentUICulture, CrosshairText.Get("CrosshairDisplayUnavailable"), savedDeviceName)));
+                }
+
+                for (int i = 0; i < screens.Length; i++)
+                {
+                    var screen = screens[i];
+                    string primaryMarker = screen.Primary ? CrosshairText.Get("CrosshairPrimaryMarker") : "";
+                    string label = string.Format(
+                        CultureInfo.CurrentUICulture,
+                        CrosshairText.Get("CrosshairDisplayChoice"),
+                        i + 1,
+                        primaryMarker,
+                        screen.Bounds.Width,
+                        screen.Bounds.Height,
+                        screen.DeviceName);
+                    choices.Add(new CrosshairDisplayChoice(screen.DeviceName, label));
+                }
+
+                foreach (var choice in choices)
+                    comboCrosshairDisplay.Items.Add(choice);
+
+                CrosshairDisplayChoice? selected = string.IsNullOrWhiteSpace(savedDeviceName)
+                    ? choices.FirstOrDefault(choice => choice.AllDisplays)
+                    : choices.FirstOrDefault(choice =>
+                        !choice.AllDisplays &&
+                        string.Equals(choice.DeviceName, savedDeviceName, StringComparison.OrdinalIgnoreCase));
+
+                if (selected is null && string.IsNullOrWhiteSpace(savedDeviceName))
+                {
+                    string? primaryDeviceName = screens.FirstOrDefault(screen => screen.Primary)?.DeviceName;
+                    selected = choices.FirstOrDefault(choice =>
+                        !choice.AllDisplays &&
+                        string.Equals(choice.DeviceName, primaryDeviceName, StringComparison.OrdinalIgnoreCase));
+                }
+
+                comboCrosshairDisplay.SelectedItem = selected;
+            }
+            finally
+            {
+                comboCrosshairDisplay.EndUpdate();
+                _loading = wasLoading;
+            }
+        }
+
+        private sealed class CrosshairDisplayChoice
+        {
+            public string DeviceName { get; }
+            public bool AllDisplays { get; }
+            private string Label { get; }
+
+            public CrosshairDisplayChoice(string deviceName, string label, bool allDisplays = false)
+            {
+                DeviceName = deviceName;
+                Label = label;
+                AllDisplays = allDisplays;
+            }
+
+            public override string ToString() => Label;
+        }
+
         protected override void OnVisibleChanged(EventArgs e)
         {
             base.OnVisibleChanged(e);
@@ -1151,7 +1469,19 @@ namespace HimpqEnhanced
             {
                 var config = HimpqConfig.Load();
                 RefreshTaskbarDisplayChoices(config.taskbar_display_device_name, config.taskbar_display_all == 1);
+                RefreshCrosshairDisplayChoices(AppConfig.GetString("crosshair_screen", "") ?? "");
+                SyncCrosshairEnabled(AppConfig.Is("crosshair"));
             }
+        }
+
+        public void SyncCrosshairEnabled(bool enabled)
+        {
+            if (checkCrosshairEnabled is null || checkCrosshairEnabled.IsDisposed) return;
+
+            bool wasLoading = _loading;
+            _loading = true;
+            checkCrosshairEnabled.Checked = enabled;
+            _loading = wasLoading;
         }
 
         private void UpdateTaskbarModeControls()
@@ -1339,6 +1669,7 @@ namespace HimpqEnhanced
 
             SelectModeItem(comboDefaultMode, data.default_performance_mode);
             SelectModeItem(comboUnplugMode, data.unplug_performance_mode);
+            LoadCrosshairConfig();
 
             for (int i = 0; i < modes.Length; i++)
             {
