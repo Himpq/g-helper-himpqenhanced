@@ -8,6 +8,10 @@ namespace GHelper.Overlay
         private const int CanvasSize = 80;
         private const int MinSize = 8;
         private const int MaxSize = 64;
+        public const int MinDotSize = 1;
+        public const int MaxDotSize = 16;
+        public const int MinLineThickness = 1;
+        public const int MaxLineThickness = 8;
 
         private readonly object gate = new();
         private readonly List<CrosshairWindow> windows = new();
@@ -28,6 +32,18 @@ namespace GHelper.Overlay
         public static int GetConfiguredType()
         {
             return Math.Clamp(AppConfig.Get("crosshair_type", 0), 0, 1);
+        }
+
+        public static int GetConfiguredDotSize()
+        {
+            int defaultSize = Math.Clamp(GetConfiguredSize() / 10, 4, 8);
+            return Math.Clamp(AppConfig.Get("crosshair_dot_size", defaultSize), MinDotSize, MaxDotSize);
+        }
+
+        public static int GetConfiguredLineThickness()
+        {
+            int defaultThickness = Math.Clamp(GetConfiguredSize() / 18, 1, 3);
+            return Math.Clamp(AppConfig.Get("crosshair_line_thickness", defaultThickness), MinLineThickness, MaxLineThickness);
         }
 
         public static bool IsCenterDotEnabled()
@@ -74,8 +90,10 @@ namespace GHelper.Overlay
                     int size = GetConfiguredSize();
                     int type = GetConfiguredType();
                     bool centerDot = IsCenterDotEnabled();
+                    int dotSize = GetConfiguredDotSize();
+                    int lineThickness = GetConfiguredLineThickness();
                     foreach (CrosshairWindow window in windows)
-                        window.Update(color, size, type, centerDot);
+                        window.Update(color, size, type, centerDot, dotSize, lineThickness);
                 }
                 finally
                 {
@@ -141,6 +159,8 @@ namespace GHelper.Overlay
                 int size = GetConfiguredSize();
                 int type = GetConfiguredType();
                 bool centerDot = IsCenterDotEnabled();
+                int dotSize = GetConfiguredDotSize();
+                int lineThickness = GetConfiguredLineThickness();
                 Screen[] availableScreens = Screen.AllScreens;
                 string selectedDeviceName = AppConfig.GetString("crosshair_screen", "") ?? "";
                 Screen[] targetScreens = string.IsNullOrWhiteSpace(selectedDeviceName)
@@ -161,7 +181,7 @@ namespace GHelper.Overlay
 
                 foreach (Screen screen in targetScreens)
                 {
-                    var window = new CrosshairWindow(color, size, type, centerDot);
+                    var window = new CrosshairWindow(color, size, type, centerDot, dotSize, lineThickness);
                     Point center = new(
                         screen.Bounds.Left + screen.Bounds.Width / 2,
                         screen.Bounds.Top + screen.Bounds.Height / 2);
@@ -202,28 +222,73 @@ namespace GHelper.Overlay
 
         private sealed class CrosshairWindow : OSDNativeForm
         {
+            private const int WmActivate = 0x0006;
+            private const int WmSetFocus = 0x0007;
+            private const int WmMouseActivate = 0x0021;
+            private const int WmNcHitTest = 0x0084;
+            private const int MaNoActivate = 3;
+            private const int HtTransparent = -1;
+
             private Color color;
             private int size;
             private int type;
             private bool centerDot;
+            private int dotSize;
+            private int lineThickness;
+            private long lastMouseActivationLog;
 
-            public CrosshairWindow(Color color, int size, int type, bool centerDot)
+            protected override bool AcceptsInput => false;
+
+            public CrosshairWindow(Color color, int size, int type, bool centerDot, int dotSize, int lineThickness)
             {
                 this.color = color;
                 this.size = size;
                 this.type = type;
                 this.centerDot = centerDot;
+                this.dotSize = dotSize;
+                this.lineThickness = lineThickness;
                 Size = new Size(CanvasSize, CanvasSize);
                 Alpha = 255;
             }
 
-            public void Update(Color color, int size, int type, bool centerDot)
+            public void Update(Color color, int size, int type, bool centerDot, int dotSize, int lineThickness)
             {
                 this.color = color;
                 this.size = size;
                 this.type = type;
                 this.centerDot = centerDot;
+                this.dotSize = dotSize;
+                this.lineThickness = lineThickness;
                 Invalidate();
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == WmNcHitTest)
+                {
+                    m.Result = (nint)HtTransparent;
+                    return;
+                }
+
+                if (m.Msg == WmMouseActivate)
+                {
+                    // Hover activation can bypass WS_EX_NOACTIVATE and ask this directly.
+                    m.Result = (nint)MaNoActivate;
+                    long now = Environment.TickCount64;
+                    if (lastMouseActivationLog == 0 || now - lastMouseActivationLog >= 5000)
+                    {
+                        lastMouseActivationLog = now;
+                        Logger.WriteLine($"Crosshair mouse activation refused: hwnd=0x{m.HWnd:X}, source=0x{m.WParam:X}, details=0x{m.LParam:X}.");
+                    }
+                    return;
+                }
+
+                if ((m.Msg == WmActivate && (m.WParam.ToInt64() & 0xFFFF) != 0) || m.Msg == WmSetFocus)
+                {
+                    Logger.WriteLine($"Crosshair unexpected focus: message=0x{m.Msg:X}, hwnd=0x{m.HWnd:X}, state=0x{m.WParam:X}, previous=0x{m.LParam:X}, position={Location}.");
+                }
+
+                base.WndProc(ref m);
             }
 
             protected override void PerformPaint(PaintEventArgs e)
@@ -232,7 +297,7 @@ namespace GHelper.Overlay
                 float centerX = CanvasSize / 2f;
                 float centerY = CanvasSize / 2f;
                 float radius = size / 2f;
-                int thickness = Math.Clamp(size / 18, 1, 3);
+                int thickness = lineThickness;
 
                 using var outlineBrush = new SolidBrush(Color.FromArgb(210, Color.Black));
                 using var colorBrush = new SolidBrush(color);
@@ -247,7 +312,8 @@ namespace GHelper.Overlay
                 }
                 else
                 {
-                    float gap = Math.Max(3, thickness * 2);
+                    // Keep the center gap unchanged when only the line width changes.
+                    float gap = Math.Max(3, Math.Clamp(size / 18, 1, 3) * 2);
                     float halfThickness = thickness / 2f;
                     DrawArm(e.Graphics, new RectangleF(centerX - radius, centerY - halfThickness, radius - gap, thickness), outlineBrush, colorBrush);
                     DrawArm(e.Graphics, new RectangleF(centerX + gap, centerY - halfThickness, radius - gap, thickness), outlineBrush, colorBrush);
@@ -257,7 +323,6 @@ namespace GHelper.Overlay
 
                 if (centerDot)
                 {
-                    int dotSize = Math.Clamp(size / 10, 4, 8);
                     var dot = new RectangleF(centerX - dotSize / 2f, centerY - dotSize / 2f, dotSize, dotSize);
                     e.Graphics.FillEllipse(outlineBrush, dot.X - 1, dot.Y - 1, dot.Width + 2, dot.Height + 2);
                     e.Graphics.FillEllipse(colorBrush, dot);

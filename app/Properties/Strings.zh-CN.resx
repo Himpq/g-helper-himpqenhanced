@@ -384,6 +384,15 @@
   <data name="CrosshairSizeValue" xml:space="preserve">
     <value>大小：{0} 像素</value>
   </data>
+  <data name="CrosshairDotSize" xml:space="preserve">
+    <value>中心点直径</value>
+  </data>
+  <data name="CrosshairLineThickness" xml:space="preserve">
+    <value>外线粗细</value>
+  </data>
+  <data name="CrosshairPixelsValue" xml:space="preserve">
+    <value>{0} 像素</value>
+  </data>
   <data name="Contrast" xml:space="preserve">
     <value>对比</value>
   </data>

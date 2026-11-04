@@ -13,6 +13,7 @@ namespace GHelper.Helpers
         private Point _location = new Point(50, 50);
         private readonly object _paintLock = new();
 
+        protected virtual bool AcceptsInput => true;
 
         protected virtual void PerformPaint(PaintEventArgs e)
         {
@@ -111,6 +112,8 @@ namespace GHelper.Helpers
             params1.Width = size1.Width;
             params1.Parent = nint.Zero;
             uint ui = User32.WS_POPUP;
+            if (!AcceptsInput)
+                ui |= User32.WS_DISABLED;
             params1.Style = (int)ui;
             params1.ExStyle = User32.WS_EX_TOPMOST | User32.WS_EX_TOOLWINDOW | User32.WS_EX_LAYERED | User32.WS_EX_NOACTIVATE | User32.WS_EX_TRANSPARENT;
             CreateHandle(params1);
@@ -330,6 +333,7 @@ namespace GHelper.Helpers
     internal class User32
     {
         public const uint WS_POPUP = 0x80000000;
+        public const uint WS_DISABLED = 0x08000000;
         public const int WS_EX_TOPMOST = 0x8;
         public const int WS_EX_TOOLWINDOW = 0x80;
         public const int WS_EX_LAYERED = 0x80000;

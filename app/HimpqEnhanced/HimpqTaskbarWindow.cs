@@ -34,6 +34,7 @@ namespace HimpqEnhanced
         private const int WM_MOUSEACTIVATE = 0x0021;
         private const int WM_NCACTIVATE = 0x0086;
         private const int WM_DISPLAYCHANGE = 0x007E;
+        private const int WM_DPICHANGED = 0x02E0;
         private const int HTTRANSPARENT = -1;
         private const int MA_NOACTIVATE = 3;
         private const int GWLP_HWNDPARENT = -8;
@@ -41,6 +42,7 @@ namespace HimpqEnhanced
         private const int DWMWA_CLOAKED = 14;
         private const int TopMostKeeperIntervalMs = 100;
         private const int ShellSurfaceMonitorIntervalMs = 150;
+        private static readonly IntPtr PerMonitorAwareV2Context = new(-4);
         private static readonly IntPtr HWND_TOP = IntPtr.Zero;
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
@@ -48,6 +50,12 @@ namespace HimpqEnhanced
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr FindWindowEx(IntPtr hWndParent, IntPtr hWndChildAfter, string lpszClass, string lpszWindow);
@@ -206,6 +214,7 @@ namespace HimpqEnhanced
         private System.Windows.Forms.Timer? _shellSurfaceMonitorTimer;
         private bool _topMostKeeperSuspended;
         private bool _shellSurfaceWasActive;
+        private bool _dpiTargetInitialized;
         private string _lastShellSurface = "";
         private long _lastTopMostKeeperLog;
         private IntPtr _floatingOwnerTaskbar;
@@ -222,6 +231,39 @@ namespace HimpqEnhanced
         // Serialises config read-modify-write cycles across instances, so two windows
         // reacting to the same event can't overwrite each other's saved state.
         internal static readonly object ConfigLock = new();
+
+        internal static IDisposable EnterPerMonitorDpiContext()
+        {
+            IntPtr previous = SetThreadDpiAwarenessContext(PerMonitorAwareV2Context);
+            if (previous == IntPtr.Zero)
+                throw new InvalidOperationException("Unable to enable per-monitor DPI awareness for the performance window. Win32 error " + Marshal.GetLastWin32Error());
+
+            return new DpiAwarenessScope(previous);
+        }
+
+        internal static HimpqTaskbarWindow CreateFloatingWindow(string targetDeviceName)
+        {
+            using var dpiContext = EnterPerMonitorDpiContext();
+            var window = new HimpqTaskbarWindow(targetDeviceName);
+            window.EnsureHandleCreated();
+            return window;
+        }
+
+        private sealed class DpiAwarenessScope : IDisposable
+        {
+            private IntPtr _previous;
+
+            public DpiAwarenessScope(IntPtr previous) => _previous = previous;
+
+            public void Dispose()
+            {
+                IntPtr previous = _previous;
+                if (previous == IntPtr.Zero) return;
+                _previous = IntPtr.Zero;
+                if (SetThreadDpiAwarenessContext(previous) == IntPtr.Zero)
+                    Logger.WriteLine("Himpq floating window: failed to restore thread DPI context; Win32 error " + Marshal.GetLastWin32Error());
+            }
+        }
 
         public HimpqTaskbarWindow(string? targetDeviceName = null)
         {
@@ -266,6 +308,12 @@ namespace HimpqEnhanced
 
         protected override bool ShowWithoutActivation => true;
 
+        internal void EnsureHandleCreated()
+        {
+            if (!IsHandleCreated)
+                CreateHandle();
+        }
+
         protected override CreateParams CreateParams
         {
             get
@@ -284,8 +332,7 @@ namespace HimpqEnhanced
         private void UpdateFont(float fontSizePt)
         {
             _displayFont?.Dispose();
-            float pt = fontSizePt * _dpi / 96f;
-            _displayFont = new Font("Segoe UI", pt, FontStyle.Regular, GraphicsUnit.Point);
+            _displayFont = new Font("Segoe UI", fontSizePt, FontStyle.Regular, GraphicsUnit.Point);
             using var g = CreateGraphics();
             _lineHeight = Math.Max(DpiScale(16), (int)Math.Ceiling(g.MeasureString("Ag", _displayFont).Height));
         }
@@ -444,6 +491,20 @@ namespace HimpqEnhanced
         }
 
         private int DpiScale(int value) => (int)Math.Round(value * _dpi / 96.0);
+
+        private void RefreshDpi()
+        {
+            if (!IsHandleCreated) return;
+            uint dpi = GetDpiForWindow(Handle);
+            if (dpi == 0 || _dpi == (int)dpi) return;
+
+            _dpi = (int)dpi;
+            var config = HimpqConfig.Load();
+            _padding = DpiScale(2);
+            _interItemGap = DpiScale(config.inter_item_gap);
+            _rowGap = DpiScale(config.row_gap);
+            _layoutDirty = true;
+        }
 
         private IntPtr GetTaskbarHandle()
         {
@@ -751,11 +812,48 @@ namespace HimpqEnhanced
 
         private void OnUpdateTick(object? sender, EventArgs e)
         {
-            try { UpdateData(); } catch { }
+            try { UpdateData(); }
+            catch (Exception ex) { Logger.WriteLine("Himpq taskbar window update failed: " + ex); }
         }
 
         private void UpdateData()
         {
+            bool needsLayout = _layoutDirty || (IsFloatingMode && IsHandleCreated && !_dpiTargetInitialized);
+            if (needsLayout)
+            {
+                if (IsFloatingMode)
+                {
+                    using var dpiContext = EnterPerMonitorDpiContext();
+                    UpdateWindowLayout();
+                }
+                else
+                {
+                    UpdateWindowLayout();
+                }
+            }
+
+            if (_readBatteryState)
+                HardwareControl.ReadBatteryState();
+
+            if (_readBatteryHealth)
+                RefreshBatteryHealth();
+
+            HardwareControl.ReadSensorsOverlay();
+
+            if (UpdateValues()) Invalidate();
+        }
+
+        private void UpdateWindowLayout()
+        {
+            if (IsFloatingMode && IsHandleCreated && !_dpiTargetInitialized)
+            {
+                Screen target = GetTargetDisplay(HimpqConfig.Load());
+                SetWindowPos(Handle, IntPtr.Zero, target.Bounds.Left, target.Bounds.Top, 0, 0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                _dpiTargetInitialized = true;
+                RefreshDpi();
+            }
+
             if (_layoutDirty)
             {
                 var config = HimpqConfig.Load();
@@ -772,16 +870,6 @@ namespace HimpqEnhanced
                 _layoutDirty = false;
                 ApplyPosition(config);
             }
-
-            if (_readBatteryState)
-                HardwareControl.ReadBatteryState();
-
-            if (_readBatteryHealth)
-                RefreshBatteryHealth();
-
-            HardwareControl.ReadSensorsOverlay();
-
-            if (UpdateValues()) Invalidate();
         }
 
         private void RefreshBatteryHealth()
@@ -970,31 +1058,39 @@ namespace HimpqEnhanced
         private void ApplyFloatingPosition(HimpqConfigData config, int targetW, int targetH)
         {
             Screen screen = GetTargetDisplay(config);
+            string deviceName = screen.DeviceName;
 
-            // taskbar_floating_x/y are stored as an offset from the target screen's
-            // top-left corner, so the same values stay valid on every display. Legacy
-            // configs (state 1) hold absolute screen coordinates and are converted once.
+            var pos = config.GetFloatingPositionForDevice(deviceName);
             int x;
             int y;
 
-            if (config.taskbar_floating_position_initialized == 1)
+            if (pos.initialized == 2)
             {
-                Screen primary = Screen.PrimaryScreen ?? Screen.AllScreens[0];
-                x = config.taskbar_floating_x - primary.Bounds.Left;
-                y = config.taskbar_floating_y - primary.Bounds.Top;
-                SaveFloatingOffset(x, y);
-            }
-            else if (config.taskbar_floating_position_initialized != 2)
-            {
-                Point defaultPoint = CalculateDefaultFloatingPosition(config, targetW, targetH);
-                x = defaultPoint.X - screen.Bounds.Left;
-                y = defaultPoint.Y - screen.Bounds.Top;
-                SaveFloatingOffset(x, y);
+                x = pos.x;
+                y = pos.y;
+
+                if (pos.screen_width > 0 && screen.Bounds.Width != pos.screen_width)
+                {
+                    int distFromRight = pos.screen_width - pos.x;
+                    if (distFromRight >= 0 && distFromRight <= pos.screen_width / 3)
+                        x = screen.Bounds.Width - distFromRight;
+                }
+
+                if (pos.screen_height > 0 && screen.Bounds.Height != pos.screen_height)
+                {
+                    int distFromBottom = pos.screen_height - pos.y;
+                    if (distFromBottom >= 0 && distFromBottom <= pos.screen_height / 3)
+                    {
+                        y = screen.Bounds.Height - distFromBottom;
+                    }
+                }
             }
             else
             {
-                x = config.taskbar_floating_x;
-                y = config.taskbar_floating_y;
+                Point defaultPoint = CalculateDefaultFloatingPosition(screen, config, targetW, targetH);
+                x = defaultPoint.X - screen.Bounds.Left;
+                y = defaultPoint.Y - screen.Bounds.Top;
+                SaveFloatingOffset(deviceName, x, y, screen.Bounds.Width, screen.Bounds.Height);
             }
 
             int absoluteX = screen.Bounds.Left + x;
@@ -1008,6 +1104,15 @@ namespace HimpqEnhanced
             absoluteX = Math.Clamp(absoluteX, screen.Bounds.Left, maxX);
             absoluteY = Math.Clamp(absoluteY, screen.Bounds.Top, maxY);
 
+            int savedX = absoluteX - screen.Bounds.Left;
+            int savedY = absoluteY - screen.Bounds.Top;
+            if (pos.initialized == 2 &&
+                (pos.screen_width != screen.Bounds.Width || pos.screen_height != screen.Bounds.Height ||
+                 pos.x != savedX || pos.y != savedY))
+            {
+                SaveFloatingOffset(deviceName, savedX, savedY, screen.Bounds.Width, screen.Bounds.Height);
+            }
+
             EnsureFloatingTaskbarOwner();
             IntPtr zOrder = config.taskbar_floating_topmost == 1 ? HWND_TOPMOST : HWND_NOTOPMOST;
             SetWindowPos(Handle, zOrder, absoluteX, absoluteY, targetW, targetH, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
@@ -1015,21 +1120,20 @@ namespace HimpqEnhanced
 
         // Persists the relative floating offset. Reloads inside the lock because a
         // sibling window may have written the config since this instance loaded it.
-        private static void SaveFloatingOffset(int x, int y)
+        private static void SaveFloatingOffset(string deviceName, int x, int y, int screenW = 0, int screenH = 0)
         {
             lock (ConfigLock)
             {
                 var latest = HimpqConfig.Load();
-                latest.taskbar_floating_x = x;
-                latest.taskbar_floating_y = y;
-                latest.taskbar_floating_position_initialized = 2;
+                latest.SetFloatingPositionForDevice(deviceName, x, y, screenW, screenH);
+
+
                 HimpqConfig.Save(latest);
             }
         }
 
-        private Point CalculateDefaultFloatingPosition(HimpqConfigData config, int targetW, int targetH)
+        private Point CalculateDefaultFloatingPosition(Screen screen, HimpqConfigData config, int targetW, int targetH)
         {
-            Screen screen = GetTargetDisplay(config);
             Rectangle bounds = screen.Bounds;
             Rectangle workArea = screen.WorkingArea;
             bool left = config.taskbar_window_position != "right";
@@ -1137,6 +1241,8 @@ namespace HimpqEnhanced
 
         protected override void WndProc(ref Message m)
         {
+            bool refreshFloatingDpi = m.Msg == WM_DPICHANGED && IsFloatingMode;
+
             if (m.Msg == WM_WINDOWPOSCHANGING && IsFloatingTopMostLocked())
             {
                 var pos = Marshal.PtrToStructure<WINDOWPOS>(m.LParam);
@@ -1181,10 +1287,27 @@ namespace HimpqEnhanced
                 Logger.WriteLine("Himpq floating window: WM_NCACTIVATE active=" + m.WParam);
             }
 
-            if (m.Msg == WM_DISPLAYCHANGE && IsFloatingMode && IsHandleCreated && !IsDisposed)
-                BeginInvoke((Action)HandleDisplayConfigurationChanged);
+            if (m.Msg == WM_DISPLAYCHANGE && IsHandleCreated && !IsDisposed)
+                Main.NotifyDisplayConfigurationChanged("WM_DISPLAYCHANGE");
 
             base.WndProc(ref m);
+
+            if (refreshFloatingDpi && IsHandleCreated && !IsDisposed)
+            {
+                try
+                {
+                    BeginInvoke((Action)(() =>
+                    {
+                        RefreshDpi();
+                        _layoutDirty = true;
+                        UpdateData();
+                    }));
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Logger.WriteLine("Himpq floating window: couldn't queue DPI refresh: " + ex.Message);
+                }
+            }
         }
 
         private bool IsFloatingTopMostLocked()
@@ -1193,36 +1316,36 @@ namespace HimpqEnhanced
             return HimpqConfig.Load().taskbar_floating_topmost == 1;
         }
 
-        private void HandleDisplayConfigurationChanged()
+        public void HandleDisplayConfigurationChanged()
         {
-            if (!IsFloatingMode || IsDisposed || !IsHandleCreated) return;
+            if (IsDisposed || !IsHandleCreated) return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke((Action)HandleDisplayConfigurationChanged);
+                return;
+            }
 
             var config = HimpqConfig.Load();
-            Screen target = GetTargetDisplay(config);
-            bool windowOnTarget = false;
-            if (GetWindowRect(Handle, out RECT rect))
+            if (!IsFloatingMode)
             {
-                // Compare by screen identity rather than strict containment: a clamped
-                // window can legitimately stick out of the bounds on a small display.
-                Rectangle windowBounds = Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
-                Screen current = Screen.FromRectangle(windowBounds);
-                windowOnTarget = string.Equals(current.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase);
-            }
-
-            if (!windowOnTarget)
-            {
-                // Reload under the shared lock so concurrent instances don't clobber
-                // each other's config writes.
-                lock (ConfigLock)
+                if (!_embedded || _hTaskbar == IntPtr.Zero || !IsWindow(_hTaskbar))
                 {
-                    var latest = HimpqConfig.Load();
-                    latest.taskbar_floating_position_initialized = 0;
-                    HimpqConfig.Save(latest);
+                    _embedded = false;
+                    EmbedIntoTaskbar();
                 }
+                _layoutDirty = true;
+                UpdateData();
+                return;
             }
 
+            _floatingOwnerTaskbar = IntPtr.Zero;
+            EnsureFloatingTaskbarOwner();
             _layoutDirty = true;
             UpdateData();
+
+            if (config.taskbar_floating_topmost == 1)
+                ForceFloatingTopMost(config);
         }
 
         private void LogWindowPosChange(string phase, IntPtr insertAfter, uint flags)

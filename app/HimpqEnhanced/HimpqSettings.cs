@@ -452,8 +452,15 @@ namespace HimpqEnhanced
                     config.taskbar_display_all == allFlag)
                     return;
 
+                string previousDeviceName = config.taskbar_display_all == 1 || string.IsNullOrEmpty(config.taskbar_display_device_name)
+                    ? Screen.PrimaryScreen?.DeviceName ?? ""
+                    : config.taskbar_display_device_name;
+                config.GetFloatingPositionForDevice(previousDeviceName);
+
                 config.taskbar_display_device_name = choice.DeviceName;
                 config.taskbar_display_all = allFlag;
+                // Any legacy shared position now belongs to the previous display only.
+                // Per-device map entries survive switching displays.
                 config.taskbar_floating_position_initialized = 0;
                 HimpqConfig.Save(config);
 
@@ -879,6 +886,7 @@ namespace HimpqEnhanced
             {
                 if (_loading) return;
                 AppConfig.Set("crosshair_center_dot", checkCrosshairCenterDot.Checked ? 1 : 0);
+                UpdateCrosshairAppearanceEnabled();
                 Program.crosshairOverlay?.UpdateSettings();
             };
 
@@ -916,6 +924,7 @@ namespace HimpqEnhanced
                 if (_loading) return;
                 AppConfig.Set("crosshair_size", trackCrosshairSize.Value);
                 UpdateCrosshairSizeLabel();
+                LoadCrosshairAppearanceConfig();
                 Program.crosshairOverlay?.UpdateSettings();
             };
             labelCrosshairSizeValue = new Label
@@ -929,6 +938,7 @@ namespace HimpqEnhanced
             labelCrosshairColor = CreateCrosshairLabel("CrosshairColor");
             rowCrosshairColor = CreateColorRow(out panelCrosshairColor, OpenCrosshairColorPicker, includeReset: false);
             panelCrosshairColor.BackColor = CrosshairOverlay.GetConfiguredColor();
+            InitCrosshairAppearanceControls();
 
             Controls.AddRange([
                 separatorCrosshair, titleCrosshair,
@@ -981,6 +991,7 @@ namespace HimpqEnhanced
             panelCrosshairColor.BackColor = CrosshairOverlay.GetConfiguredColor();
             RefreshCrosshairDisplayChoices(AppConfig.GetString("crosshair_screen", "") ?? "");
             UpdateCrosshairSizeLabel();
+            LoadCrosshairAppearanceConfig();
         }
 
         private Panel CreateColorRow(out Panel swatch, Action pickColor, bool includeReset)
@@ -1254,14 +1265,9 @@ namespace HimpqEnhanced
             y += rowGap;
             PlaceCrosshairRow(labelCrosshairDisplay, comboCrosshairDisplay, y, labelX, controlX, labelW, 360, controlH);
             y += rowGap;
-            labelCrosshairSize.Location = new Point(labelX, y);
-            labelCrosshairSize.Size = new Size(labelW, controlH);
-            trackCrosshairSize.Location = new Point(controlX, y - 4);
-            trackCrosshairSize.Size = new Size(270, 44);
-            labelCrosshairSizeValue.Location = new Point(controlX + 280, y);
-            // Native TrackBar.AutoSize can make the slider taller at higher DPI.
-            // Place the color row below its actual bounds rather than a fixed row gap.
-            y = Math.Max(trackCrosshairSize.Bottom, labelCrosshairSizeValue.Bottom) + 12;
+            y = PlaceCrosshairSliderRow(labelCrosshairSize, trackCrosshairSize, labelCrosshairSizeValue,
+                y, labelX, controlX, labelW, controlH);
+            y = ArrangeCrosshairAppearanceControls(y, labelX, controlX, labelW, controlH);
             PlaceCrosshairRow(labelCrosshairColor, rowCrosshairColor, y, labelX, controlX, labelW, 360, controlH);
 
             AutoScrollMinSize = new Size(0, y + controlH + 64);
@@ -1323,7 +1329,7 @@ namespace HimpqEnhanced
                     .ToArray();
                 var choices = new List<TaskbarDisplayChoice>();
 
-                if (screens.Length > 1)
+                if (screens.Length > 1 || allDisplays)
                     choices.Add(new TaskbarDisplayChoice(
                         "",
                         "所有显示器（每块屏各显示一份，共 " + screens.Length + " 块）",
@@ -1503,12 +1509,18 @@ namespace HimpqEnhanced
             if (numFloatingX is null || numFloatingY is null) return;
 
             var data = HimpqConfig.Load();
-            if (data.taskbar_floating_position_initialized != 2) return;
+            // Resolve per-device position for the currently selected display
+            var selectedDisplay = comboTaskbarDisplay.SelectedItem as TaskbarDisplayChoice;
+            var deviceName = selectedDisplay?.AllDisplays == true
+                ? Screen.PrimaryScreen?.DeviceName ?? ""
+                : selectedDisplay?.DeviceName ?? data.taskbar_display_device_name ?? "";
+            var pos = data.GetFloatingPositionForDevice(deviceName);
+            if (pos.initialized != 2) return;
 
             bool wasLoading = _loading;
             _loading = true;
-            SetNumericValue(numFloatingX, data.taskbar_floating_x);
-            SetNumericValue(numFloatingY, data.taskbar_floating_y);
+            SetNumericValue(numFloatingX, pos.x);
+            SetNumericValue(numFloatingY, pos.y);
             _loading = wasLoading;
         }
 
@@ -1657,8 +1669,13 @@ namespace HimpqEnhanced
             comboTaskbarPosition.SelectedIndex = data.taskbar_window_position == "right" ? 1 : 0;
             numFontSize.Value = data.font_size > 0 ? data.font_size : 8;
             numOffset.Value = data.taskbar_window_offset;
-            SetNumericValue(numFloatingX, data.taskbar_floating_x);
-            SetNumericValue(numFloatingY, data.taskbar_floating_y);
+            // Load per-device floating position for the currently configured display
+            var loadDevName = data.taskbar_display_all == 1
+                ? Screen.PrimaryScreen?.DeviceName ?? ""
+                : data.taskbar_display_device_name ?? "";
+            var loadedPos = data.GetFloatingPositionForDevice(loadDevName);
+            SetNumericValue(numFloatingX, loadedPos.initialized == 2 ? loadedPos.x : data.taskbar_floating_x);
+            SetNumericValue(numFloatingY, loadedPos.initialized == 2 ? loadedPos.y : data.taskbar_floating_y);
             checkFloatingClickThrough.Checked = data.taskbar_floating_click_through == 1;
             checkFloatingTopmost.Checked = data.taskbar_floating_topmost == 1;
             numInterItemGap.Value = data.inter_item_gap;
@@ -1723,11 +1740,22 @@ namespace HimpqEnhanced
             data.taskbar_window_offset = (int)numOffset.Value;
             data.taskbar_floating_click_through = checkFloatingClickThrough.Checked ? 1 : 0;
             data.taskbar_floating_topmost = checkFloatingTopmost.Checked ? 1 : 0;
-            if (saveFloatingPosition || data.taskbar_floating_position_initialized == 2)
+            if (saveFloatingPosition)
             {
-                data.taskbar_floating_x = (int)numFloatingX.Value;
-                data.taskbar_floating_y = (int)numFloatingY.Value;
-                data.taskbar_floating_position_initialized = 2;
+                using var dpiContext = HimpqTaskbarWindow.EnterPerMonitorDpiContext();
+                var selectedDisplay = comboTaskbarDisplay.SelectedItem as TaskbarDisplayChoice;
+                var deviceName = selectedDisplay?.AllDisplays == true
+                    ? Screen.PrimaryScreen?.DeviceName ?? ""
+                    : selectedDisplay?.DeviceName ?? data.taskbar_display_device_name ?? "";
+                // Save per-device position when the user manually adjusts spinners
+                var screen = Screen.AllScreens.FirstOrDefault(s => string.Equals(s.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
+                              ?? Screen.PrimaryScreen;
+                data.SetFloatingPositionForDevice(
+                    deviceName,
+                    (int)numFloatingX.Value,
+                    (int)numFloatingY.Value,
+                    screen?.Bounds.Width ?? 0,
+                    screen?.Bounds.Height ?? 0);
             }
             data.inter_item_gap = (int)numInterItemGap.Value;
             data.row_gap = (int)numRowGap.Value;

@@ -8,6 +8,15 @@ using GHelper;
 
 namespace HimpqEnhanced
 {
+    public class TaskbarFloatingPosition
+    {
+        public int x { get; set; } = 0;
+        public int y { get; set; } = 0;
+        public int screen_width { get; set; } = 0;
+        public int screen_height { get; set; } = 0;
+        public int initialized { get; set; } = 0;
+    }
+
     public class TaskbarItemConfig
     {
         public bool enabled { get; set; } = true;
@@ -51,6 +60,72 @@ namespace HimpqEnhanced
         public int? taskbar_dark_shadow_color { get; set; }
         public int? taskbar_light_shadow_color { get; set; }
         public List<TaskbarItemConfig> taskbar_items { get; set; } = new();
+        public Dictionary<string, TaskbarFloatingPosition> taskbar_floating_positions { get; set; } = new();
+
+        public TaskbarFloatingPosition GetFloatingPositionForDevice(string? deviceName)
+        {
+            taskbar_floating_positions ??= new();
+
+            string key = string.IsNullOrEmpty(deviceName) ? (taskbar_display_device_name ?? "") : deviceName;
+
+            if (!string.IsNullOrEmpty(key) && taskbar_floating_positions.TryGetValue(key, out var pos) && pos is not null)
+                return pos;
+
+            if (taskbar_floating_position_initialized is 1 or 2)
+            {
+                Screen? primary = Screen.PrimaryScreen;
+                string primaryName = primary?.DeviceName ?? "";
+                bool matches = string.Equals(key, taskbar_display_device_name, StringComparison.OrdinalIgnoreCase) ||
+                               (string.IsNullOrEmpty(taskbar_display_device_name) && string.Equals(primaryName, key, StringComparison.OrdinalIgnoreCase));
+                if (matches)
+                {
+                    int x = taskbar_floating_x;
+                    int y = taskbar_floating_y;
+                    if (taskbar_floating_position_initialized == 1 && primary is not null)
+                    {
+                        x -= primary.Bounds.Left;
+                        y -= primary.Bounds.Top;
+                    }
+
+                    var migrated = new TaskbarFloatingPosition
+                    {
+                        x = x,
+                        y = y,
+                        initialized = 2
+                    };
+                    if (!string.IsNullOrEmpty(key))
+                        taskbar_floating_positions[key] = migrated;
+                    return migrated;
+                }
+            }
+
+            return new TaskbarFloatingPosition { initialized = 0 };
+        }
+
+        public void SetFloatingPositionForDevice(string? deviceName, int x, int y, int screenWidth = 0, int screenHeight = 0)
+        {
+            taskbar_floating_positions ??= new();
+
+            string key = string.IsNullOrEmpty(deviceName) ? (taskbar_display_device_name ?? "") : deviceName;
+            if (string.IsNullOrEmpty(key))
+                key = Screen.PrimaryScreen?.DeviceName ?? "";
+
+            if (!taskbar_floating_positions.TryGetValue(key, out var pos) || pos is null)
+            {
+                pos = new TaskbarFloatingPosition();
+                taskbar_floating_positions[key] = pos;
+            }
+
+            pos.x = x;
+            pos.y = y;
+            pos.screen_width = screenWidth;
+            pos.screen_height = screenHeight;
+            pos.initialized = 2;
+
+            taskbar_floating_x = x;
+            taskbar_floating_y = y;
+            taskbar_floating_position_initialized = 2;
+        }
     }
 
     public class HimpqConfigExportData
@@ -88,6 +163,8 @@ namespace HimpqEnhanced
                 var data = JsonSerializer.Deserialize<HimpqConfigData>(json) ?? NewDefault();
                 if (data.taskbar_items is null)
                     data.taskbar_items = new List<TaskbarItemConfig>();
+                if (data.taskbar_floating_positions is null)
+                    data.taskbar_floating_positions = new();
                 return data;
             }
             catch

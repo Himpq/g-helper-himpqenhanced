@@ -384,6 +384,15 @@
   <data name="CrosshairSizeValue" xml:space="preserve">
     <value>Size: {0} px</value>
   </data>
+  <data name="CrosshairDotSize" xml:space="preserve">
+    <value>Center dot diameter</value>
+  </data>
+  <data name="CrosshairLineThickness" xml:space="preserve">
+    <value>Line thickness</value>
+  </data>
+  <data name="CrosshairPixelsValue" xml:space="preserve">
+    <value>{0} px</value>
+  </data>
   <data name="Contrast" xml:space="preserve">
     <value>Contrast</value>
   </data>
