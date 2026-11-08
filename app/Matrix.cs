@@ -560,7 +560,7 @@ namespace GHelper
             // re-apply gating
             if (matrixControl.IsGated) matrixControl.SetDevice();
 
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+            GHelper.Helpers.MemoryHelper.TrimAfter();
         }
 
         private void VisualiseMatrix()

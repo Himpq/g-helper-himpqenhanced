@@ -342,8 +342,9 @@ namespace GHelper
 
         private void Fans_FormClosed(object? sender, FormClosedEventArgs e)
         {
-            //Because windows charts seem to eat a lot of memory :(
-            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+            // Windows charts seem to eat a lot of memory, but a forced collection on the
+            // UI thread stalls the app while the window closes. Trim in the background.
+            GHelper.Helpers.MemoryHelper.TrimAfter();
         }
 
         private void CheckApplyUV_Click(object? sender, EventArgs e)

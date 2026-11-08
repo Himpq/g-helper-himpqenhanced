@@ -277,6 +277,7 @@ namespace GHelper
 
             Text = "G-Helper-HimpqEnhanced " + (ProcessHelper.IsUserAdministrator() ? "—" : "-") + " " + AppConfig.GetModelShort();
             TopMost = AppConfig.Is("topmost");
+            MaximizeBox = false;
 
             //This will auto position the window again when it resizes. Might mess with position if people drag the window somewhere else.
             this.Resize += SettingsForm_Resize;
@@ -676,14 +677,18 @@ namespace GHelper
 
         private void SettingsForm_Resize(object? sender, EventArgs e)
         {
-            if (WindowState != FormWindowState.Normal)
+            // Minimising is a legitimate state; only undo maximise, which this window
+            // does not support.
+            if (WindowState == FormWindowState.Minimized) return;
+            if (WindowState == FormWindowState.Maximized)
             {
                 WindowState = FormWindowState.Normal;
                 return;
             }
 
-            Left = Screen.FromControl(this).WorkingArea.Width - 10 - Width;
-            Top = Screen.FromControl(this).WorkingArea.Height - 10 - Height;
+            Rectangle workingArea = Screen.FromControl(this).WorkingArea;
+            Left = workingArea.Right - 10 - Width;
+            Top = workingArea.Bottom - 10 - Height;
         }
 
         private void PanelBattery_MouseEnter(object? sender, EventArgs e)
@@ -1572,8 +1577,10 @@ namespace GHelper
         public void ShowAll()
         {
             this.Activate();
-            this.TopMost = true;
-            this.TopMost = AppConfig.Is("topmost");
+            // Forcing TopMost on and off just to raise the window causes two z-order
+            // changes (and a full repaint) each time the window is shown. BringToFront
+            // is enough; the configured TopMost state is already applied elsewhere.
+            this.BringToFront();
         }
 
         /// <summary>

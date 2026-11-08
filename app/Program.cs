@@ -458,19 +458,16 @@ namespace GHelper
 
                 settingsForm.WindowState = FormWindowState.Normal;
 
-                settingsForm.Location = screen.WorkingArea.Location;
-                settingsForm.Left = screen.WorkingArea.Width - 10 - settingsForm.Width;
-                settingsForm.Top = screen.WorkingArea.Height - 10 - settingsForm.Height;
+                // Place once before showing, using the working-area edges so the window
+                // lands correctly on displays with negative virtual-screen coordinates.
+                int targetLeft = screen.WorkingArea.Right - 10 - settingsForm.Width;
+                int targetTop = AppConfig.IsAlly()
+                    ? Math.Max(screen.WorkingArea.Top + 10, screen.WorkingArea.Bottom - 110 - settingsForm.Height)
+                    : screen.WorkingArea.Bottom - 10 - settingsForm.Height;
+                settingsForm.Location = new Point(targetLeft, targetTop);
 
                 settingsForm.Show();
                 settingsForm.ShowAll();
-
-                settingsForm.Left = screen.WorkingArea.Width - 10 - settingsForm.Width;
-
-                if (AppConfig.IsAlly())
-                    settingsForm.Top = Math.Max(10, screen.Bounds.Height - 110 - settingsForm.Height);
-                else
-                    settingsForm.Top = screen.WorkingArea.Height - 10 - settingsForm.Height;
 
                 settingsForm.VisualiseGPUMode();
             }
