@@ -39,6 +39,16 @@ namespace GHelper.UI
 
         public bool darkTheme = false;
         private bool themeInitialized = false;
+
+        public RForm()
+        {
+            // The custom controls paint over their parent, so buffering the form's own
+            // background removes most of the flicker when the window is shown, moved or
+            // uncovered. Child controls keep their own double buffering.
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+
         protected override CreateParams CreateParams
         {
             get

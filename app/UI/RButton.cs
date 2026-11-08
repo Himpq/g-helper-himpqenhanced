@@ -63,6 +63,33 @@ namespace GHelper.UI
 
         protected override bool ShowFocusCues => false;
 
+        // The rounded window shape used to be recreated and re-applied on every paint,
+        // which means a SetWindowRgn call per repaint (~0.5 ms in practice, more at high
+        // DPI). Cache it and only touch the window region when the geometry changes.
+        private Size shapeRegionSize;
+        private int shapeRegionRadius = -1;
+        private int shapeRegionBorder = -1;
+
+        private void EnsureShapeRegion(int radius, int border)
+        {
+            Size size = ClientRectangle.Size;
+            if (size == shapeRegionSize && radius == shapeRegionRadius && border == shapeRegionBorder)
+                return;
+
+            using GraphicsPath path = GetFigurePath(ClientRectangle, radius + border);
+            Region = new Region(path);
+            shapeRegionSize = size;
+            shapeRegionRadius = radius;
+            shapeRegionBorder = border;
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            // Force the next paint to rebuild the cached shape region.
+            shapeRegionSize = Size.Empty;
+            base.OnResize(e);
+        }
+
         public RButton()
         {
             DoubleBuffered = true;
@@ -114,11 +141,12 @@ namespace GHelper.UI
 
             Rectangle rectSurface = ClientRectangle;
 
+            EnsureShapeRegion(radius, border);
+
             using (GraphicsPath pathSurface = GetFigurePath(rectSurface, radius + border))
             using (Pen penSurface = new Pen(Parent.BackColor, border))
             {
                 pevent.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                Region = new Region(pathSurface);
                 pevent.Graphics.DrawPath(penSurface, pathSurface);
 
                 bool drawActive = Enabled && !Borderless && activated && borderColor.A > 0;
