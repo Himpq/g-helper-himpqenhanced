@@ -147,12 +147,28 @@ namespace HimpqEnhanced
             Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
         };
 
+        // The taskbar window and its topmost keeper call Load() many times per second,
+        // including from window-message handlers. Re-reading and re-parsing the JSON
+        // file each time caused repeated disk IO and allocations on the UI thread, so
+        // the last parsed snapshot is kept until the file timestamp changes.
+        private static readonly object CacheLock = new();
+        private static HimpqConfigData? cachedConfig;
+        private static DateTime cachedWriteTime;
+        private static long lastCacheCheck;
+
         public static HimpqConfigData Load()
         {
             try
             {
-                Directory.CreateDirectory(configDir);
-                if (!File.Exists(configFile))
+                DateTime writeTime = File.Exists(configFile) ? File.GetLastWriteTimeUtc(configFile) : DateTime.MinValue;
+
+                lock (CacheLock)
+                {
+                    if (cachedConfig is not null && writeTime == cachedWriteTime)
+                        return cachedConfig;
+                }
+
+                if (writeTime == DateTime.MinValue)
                 {
                     var defaults = NewDefault();
                     Save(defaults);
@@ -161,16 +177,47 @@ namespace HimpqEnhanced
 
                 string json = File.ReadAllText(configFile);
                 var data = JsonSerializer.Deserialize<HimpqConfigData>(json) ?? NewDefault();
-                if (data.taskbar_items is null)
-                    data.taskbar_items = new List<TaskbarItemConfig>();
-                if (data.taskbar_floating_positions is null)
-                    data.taskbar_floating_positions = new();
+                Normalize(data);
+
+                lock (CacheLock)
+                {
+                    cachedConfig = data;
+                    cachedWriteTime = writeTime;
+                }
                 return data;
             }
             catch
             {
                 return NewDefault();
             }
+        }
+
+        // Same snapshot without even the timestamp check. For hot paths that only read a
+        // flag (topmost keeper, message handlers); callers that need freshly written
+        // values still go through Load().
+        public static HimpqConfigData LoadCached()
+        {
+            long now = Environment.TickCount64;
+            lock (CacheLock)
+            {
+                // At most one timestamp check per second, so message handlers and the
+                // 100 ms topmost keeper stay off the file system while still noticing
+                // edits made outside the process.
+                if (cachedConfig is not null && now - lastCacheCheck < 1000)
+                    return cachedConfig;
+            }
+
+            var data = Load();
+            lock (CacheLock) lastCacheCheck = now;
+            return data;
+        }
+
+        private static void Normalize(HimpqConfigData data)
+        {
+            if (data.taskbar_items is null)
+                data.taskbar_items = new List<TaskbarItemConfig>();
+            if (data.taskbar_floating_positions is null)
+                data.taskbar_floating_positions = new();
         }
 
         public static void Save(HimpqConfigData data)
@@ -187,6 +234,15 @@ namespace HimpqEnhanced
             Directory.CreateDirectory(configDir);
             string json = JsonSerializer.Serialize(data, JsonOptions);
             File.WriteAllText(configFile, json, new UTF8Encoding(false));
+
+            // Keep the in-memory snapshot in sync with what we just wrote so the next
+            // Load() does not need a redundant read.
+            lock (CacheLock)
+            {
+                cachedConfig = data;
+                try { cachedWriteTime = File.GetLastWriteTimeUtc(configFile); }
+                catch { cachedWriteTime = DateTime.MinValue; }
+            }
         }
 
         public static HimpqConfigExportData CreateExportSnapshot()

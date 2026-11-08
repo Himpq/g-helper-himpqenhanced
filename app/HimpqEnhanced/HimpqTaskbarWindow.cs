@@ -633,7 +633,7 @@ namespace HimpqEnhanced
                 return;
             }
 
-            var config = HimpqConfig.Load();
+            var config = HimpqConfig.LoadCached();
             if (config.taskbar_window_enabled != 1 ||
                 config.taskbar_window_floating_enabled != 1 ||
                 config.taskbar_floating_topmost != 1)
@@ -649,11 +649,33 @@ namespace HimpqEnhanced
                 return;
             }
 
-            IntPtr windowAbove = GetWindow(Handle, GW_HWNDPREV);
+            // Keep the owner/style state healthy even when no reassert is needed.
+            EnsureFloatingTaskbarOwner();
+            EnsureFloatingExtendedStyles(config);
+
+            // Only fight windows that are not ours. The hardware overlay and the
+            // crosshair are topmost too; reasserting over them every 100 ms would just
+            // produce a continuous z-order swap between our own windows.
+            IntPtr windowAbove = FindForeignWindowAbove(Handle);
+            if (windowAbove == IntPtr.Zero) return;
 
             ForceFloatingTopMost(config);
-            if (windowAbove != IntPtr.Zero)
-                LogTopMostKeeperReassert(windowAbove);
+            LogTopMostKeeperReassert(windowAbove);
+        }
+
+        // Walks up the z-order until it finds a window that belongs to another process.
+        // A short cap keeps the 100 ms keeper cheap even in a crowded topmost band.
+        private static IntPtr FindForeignWindowAbove(IntPtr hwnd)
+        {
+            IntPtr current = GetWindow(hwnd, GW_HWNDPREV);
+            for (int i = 0; i < 8 && current != IntPtr.Zero; i++)
+            {
+                GetWindowThreadProcessId(current, out uint pid);
+                if (pid != (uint)Environment.ProcessId)
+                    return current;
+                current = GetWindow(current, GW_HWNDPREV);
+            }
+            return IntPtr.Zero;
         }
 
         private void MonitorShellSurface()
@@ -800,7 +822,7 @@ namespace HimpqEnhanced
 
         private void LogTopMostKeeperReassert(IntPtr windowAbove)
         {
-            var config = HimpqConfig.Load();
+            var config = HimpqConfig.LoadCached();
             if (config.debug_mode != 1) return;
 
             long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
@@ -1313,7 +1335,7 @@ namespace HimpqEnhanced
         private bool IsFloatingTopMostLocked()
         {
             if (_topMostKeeperSuspended || !IsFloatingMode || !IsHandleCreated) return false;
-            return HimpqConfig.Load().taskbar_floating_topmost == 1;
+            return HimpqConfig.LoadCached().taskbar_floating_topmost == 1;
         }
 
         public void HandleDisplayConfigurationChanged()
@@ -1350,7 +1372,7 @@ namespace HimpqEnhanced
 
         private void LogWindowPosChange(string phase, IntPtr insertAfter, uint flags)
         {
-            if (HimpqConfig.Load().debug_mode != 1) return;
+            if (HimpqConfig.LoadCached().debug_mode != 1) return;
 
             string insertAfterText = insertAfter == HWND_TOPMOST ? "TOPMOST"
                 : insertAfter == HWND_NOTOPMOST ? "NOTOPMOST"
@@ -1398,12 +1420,12 @@ namespace HimpqEnhanced
 
         private bool IsFloatingClickThroughEnabled()
         {
-            return IsFloatingMode && HimpqConfig.Load().taskbar_floating_click_through == 1;
+            return IsFloatingMode && HimpqConfig.LoadCached().taskbar_floating_click_through == 1;
         }
 
         private void LogFloatingWindowState(string reason)
         {
-            if (HimpqConfig.Load().debug_mode != 1) return;
+            if (HimpqConfig.LoadCached().debug_mode != 1) return;
             if (!IsHandleCreated) return;
 
             int cloaked = -1;
@@ -1429,13 +1451,13 @@ namespace HimpqEnhanced
 
         private void LogFloatingOwnerChanged(IntPtr taskbar)
         {
-            if (HimpqConfig.Load().debug_mode != 1) return;
+            if (HimpqConfig.LoadCached().debug_mode != 1) return;
             Logger.WriteLine("Himpq floating window: taskbar owner=" + DescribeWindow(taskbar));
         }
 
         private void LogEmbeddedWindowRestore(string shellSurface)
         {
-            if (HimpqConfig.Load().debug_mode != 1) return;
+            if (HimpqConfig.LoadCached().debug_mode != 1) return;
             Logger.WriteLine("Himpq taskbar window: restored after shell surface=" + shellSurface + " foreground=" + DescribeWindow(GetForegroundWindow()));
         }
 
