@@ -17,6 +17,8 @@ namespace GHelper.Overlay
         private readonly List<CrosshairWindow> windows = new();
         private bool running;
         private bool disposed;
+        private System.Windows.Forms.Timer? refreshDebounceTimer;
+        private string lastScreenSignature = "";
 
         public static Color GetConfiguredColor()
         {
@@ -72,6 +74,7 @@ namespace GHelper.Overlay
 
                 running = false;
                 SystemEvents.DisplaySettingsChanged -= DisplaySettingsChanged;
+                refreshDebounceTimer?.Stop();
                 CloseWindows();
                 Logger.WriteLine("Crosshair overlay stopped.");
             }
@@ -104,7 +107,7 @@ namespace GHelper.Overlay
 
         public void RefreshScreens()
         {
-            RefreshDisplays();
+            RefreshDisplays(force: true);
         }
 
         public void Dispose()
@@ -118,6 +121,9 @@ namespace GHelper.Overlay
 
                 running = false;
                 disposed = true;
+                refreshDebounceTimer?.Stop();
+                refreshDebounceTimer?.Dispose();
+                refreshDebounceTimer = null;
                 CloseWindows();
             }
         }
@@ -130,29 +136,54 @@ namespace GHelper.Overlay
 
             if (settingsForm.InvokeRequired)
             {
-                settingsForm.BeginInvoke((Action)RefreshDisplays);
+                settingsForm.BeginInvoke((Action)ScheduleRefresh);
                 return;
             }
 
-            RefreshDisplays();
+            ScheduleRefresh();
         }
 
-        private void RefreshDisplays()
+        // A game switching to fullscreen (or back) fires DisplaySettingsChanged several
+        // times in a row. Rebuilding the topmost windows for every event adds avoidable
+        // window churn, so collapse the burst into a single refresh.
+        private void ScheduleRefresh()
+        {
+            if (!running || disposed) return;
+
+            if (refreshDebounceTimer is null)
+            {
+                refreshDebounceTimer = new System.Windows.Forms.Timer { Interval = 800 };
+                refreshDebounceTimer.Tick += (_, _) =>
+                {
+                    refreshDebounceTimer!.Stop();
+                    RefreshDisplays();
+                };
+            }
+
+            refreshDebounceTimer.Stop();
+            refreshDebounceTimer.Start();
+        }
+
+        private void RefreshDisplays(bool force = false)
         {
             lock (gate)
             {
                 if (!running || disposed) return;
 
-                RecreateWindows();
-                Logger.WriteLine($"Crosshair overlay refreshed on {windows.Count} display(s).");
+                if (RecreateWindows(skipIfUnchanged: !force))
+                    Logger.WriteLine($"Crosshair overlay refreshed on {windows.Count} display(s).");
             }
         }
 
-        private void RecreateWindows()
+        private bool RecreateWindows(bool skipIfUnchanged = false)
         {
-            if (!TryEnterPerMonitorDpiContext(out nint previousDpiContext)) return;
+            if (!TryEnterPerMonitorDpiContext(out nint previousDpiContext)) return false;
             try
             {
+                string signature = BuildScreenSignature();
+                if (skipIfUnchanged && signature == lastScreenSignature && windows.Count > 0)
+                    return false;
+
                 CloseWindows();
 
                 Color color = GetConfiguredColor();
@@ -176,8 +207,11 @@ namespace GHelper.Overlay
                     Logger.WriteLine(string.IsNullOrWhiteSpace(selectedDeviceName)
                         ? "Crosshair overlay was not created because Windows reports no displays."
                         : $"Crosshair overlay was not created because selected display '{selectedDeviceName}' is unavailable. Connected displays: {availableNames}");
-                    return;
+                    lastScreenSignature = "";
+                    return false;
                 }
+
+                lastScreenSignature = signature;
 
                 foreach (Screen screen in targetScreens)
                 {
@@ -191,11 +225,31 @@ namespace GHelper.Overlay
                     window.Show();
                     Logger.WriteLine($"Crosshair display={screen.DeviceName} bounds={screen.Bounds} center={center} window={location} size={CanvasSize}.");
                 }
+
+                return true;
             }
             finally
             {
                 RestoreDpiContext(previousDpiContext);
             }
+        }
+
+        // Identifies the display layout the crosshair is currently anchored to. When a
+        // display-change event does not actually change any target screen, the existing
+        // windows are still correct and do not need to be recreated.
+        private static string BuildScreenSignature()
+        {
+            string selectedDeviceName = AppConfig.GetString("crosshair_screen", "") ?? "";
+            Screen[] screens = string.IsNullOrWhiteSpace(selectedDeviceName)
+                ? Screen.AllScreens
+                : Screen.AllScreens.Where(screen => string.Equals(
+                    screen.DeviceName,
+                    selectedDeviceName,
+                    StringComparison.OrdinalIgnoreCase)).ToArray();
+
+            return selectedDeviceName + "|" + string.Join("|", screens
+                .OrderBy(screen => screen.DeviceName, StringComparer.OrdinalIgnoreCase)
+                .Select(screen => screen.DeviceName + ":" + screen.Bounds + ":" + screen.Primary));
         }
 
         private static bool TryEnterPerMonitorDpiContext(out nint previousDpiContext)
@@ -236,6 +290,7 @@ namespace GHelper.Overlay
             private int dotSize;
             private int lineThickness;
             private long lastMouseActivationLog;
+            private long lastFocusLog;
 
             protected override bool AcceptsInput => false;
 
@@ -285,7 +340,12 @@ namespace GHelper.Overlay
 
                 if ((m.Msg == WmActivate && (m.WParam.ToInt64() & 0xFFFF) != 0) || m.Msg == WmSetFocus)
                 {
-                    Logger.WriteLine($"Crosshair unexpected focus: message=0x{m.Msg:X}, hwnd=0x{m.HWnd:X}, state=0x{m.WParam:X}, previous=0x{m.LParam:X}, position={Location}.");
+                    long now = Environment.TickCount64;
+                    if (lastFocusLog == 0 || now - lastFocusLog >= 5000)
+                    {
+                        lastFocusLog = now;
+                        Logger.WriteLine($"Crosshair unexpected focus: message=0x{m.Msg:X}, hwnd=0x{m.HWnd:X}, state=0x{m.WParam:X}, previous=0x{m.LParam:X}, position={Location}.");
+                    }
                 }
 
                 base.WndProc(ref m);
